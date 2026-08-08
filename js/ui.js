@@ -1803,6 +1803,32 @@
     exportPanel.appendChild(exportBtn);
     grid.appendChild(exportPanel);
 
+    /* Install PWA */
+    var installPanel = panel("Install App", "Add StreamHub to your home screen or desktop for quick access.");
+    installPanel.classList.add("panel-install");
+    var installBtn = buttonEl("btn btn-primary", "⬇ Install StreamHub", function () {
+      var prompt = window.__pwaInstallPrompt;
+      if (prompt) {
+        prompt.prompt();
+        prompt.userChoice.then(function (choice) {
+          window.__pwaInstallPrompt = choice.outcome === "dismissed" ? prompt : null;
+          if (choice.outcome === "accepted") {
+            toast("StreamHub is installing", "ok");
+          }
+        });
+      } else if (/iPad|iPhone|iPod/.test(navigator.userAgent) && navigator.standalone === false) {
+        toast("Tap the Share button, then choose 'Add to Home Screen'", "ok");
+      } else {
+        toast("Install not available. Make sure the page is served over HTTPS/HTTP and the browser supports PWAs.", "err");
+      }
+    });
+    installPanel.appendChild(installBtn);
+    var installHint = document.createElement("div");
+    installHint.className = "url-hint";
+    installHint.textContent = "Available when served over HTTP/HTTPS.";
+    installPanel.appendChild(installHint);
+    grid.appendChild(installPanel);
+
     /* Add */
     var addPanel = panel("Add Content", "Manually add a movie or a series episode without a file.");
     addPanel.classList.add("panel-add");
