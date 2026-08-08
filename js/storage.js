@@ -707,7 +707,8 @@
     memClear();
     Object.keys(KEYS).forEach(function (k) { try { localStorage.removeItem(KEYS[k]); } catch (e) { /* ignore */ } });
     itemsCache = [];
-    getDB().then(function (db) {
+    markIndexesDirty();
+    return getDB().then(function (db) {
       var tx = db.transaction(DB_STORE, "readwrite");
       tx.objectStore(DB_STORE).delete(ITEM_DB_KEY);
       tx.objectStore(DB_STORE).delete(INDEX_DB_KEY);

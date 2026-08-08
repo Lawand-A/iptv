@@ -173,8 +173,7 @@
           });
         } else if (action === "reset") {
           UI.confirmModal("Reset everything?", "This wipes all application data. There is no undo.", function () {
-            Store.resetAll();
-            location.reload();
+            Store.resetAll().then(function () { location.reload(); }).catch(function () { location.reload(); });
           });
         } else if (action === "delete-refresh") {
           UI.confirmModal("Delete and re-import?", "All current items will be removed, then re-imported from your saved sources. History, progress and watchlist are kept.", function () {
