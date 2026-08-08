@@ -13,7 +13,7 @@
       .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
 
-  function pad(n) { return n < 10 ? "0" + n : "" + n; }
+  function pad(n) { n = parseInt(n, 10) || 0; return n < 10 ? "0" + n : "" + n; }
   function fmt(sec) {
     if (!isFinite(sec) || sec <= 0) return "";
     sec = Math.floor(sec);
@@ -1213,6 +1213,7 @@
       var p = progressOf(ep.id);
       if (isWatched(ep.id)) {
         state.textContent = "✓ Watched";
+        state.classList.add("watched");
       } else if (p && p.progress > 0) {
         state.textContent = p.progress + "% watched";
       }
@@ -1689,7 +1690,7 @@
     header.className = "section-header";
     var h = document.createElement("h1");
     h.className = "section-title";
-    h.textContent = "Library & Settings";
+    h.textContent = "Settings";
     header.appendChild(h);
     var count = document.createElement("span");
     count.className = "detail-meta";
@@ -1703,6 +1704,7 @@
 
     /* Import */
     var importPanel = panel("Import M3U", "Load a playlist from a file or a URL. Direct videos and embed code are detected automatically. Re-imports update existing entries instead of duplicating them.");
+    importPanel.classList.add("panel-import");
     var drop = document.createElement("div");
     drop.className = "file-drop focusable";
     drop.tabIndex = 0;
@@ -1757,6 +1759,7 @@
     /* Xtream provider */
     var xt = Store.getSettings().xtream || {};
     var xtreamPanel = panel("Xtream Provider", "Add a whole provider using its server URL (with port), username and password. Live channels, VOD movies and series are fetched automatically, directly from your provider. Use Refresh later to pull in any new content.");
+    xtreamPanel.classList.add("panel-xtream");
     var xtUrlIn = inputField("url", xt.base || "", "http://server-address:8080");
     var xtUserIn = inputField("text", xt.username || "", "username");
     var xtPassIn = inputField("password", xt.password || "", "password");
@@ -1792,6 +1795,7 @@
 
     /* Export */
     var exportPanel = panel("Export M3U", "Download the current library as library.m3u. Embed sources round-trip losslessly.");
+    exportPanel.classList.add("panel-export");
     var exportBtn = buttonEl("btn btn-primary", "⬇ Download library.m3u", function () {
       M3UExporter.download(Store.getItems(), "library.m3u");
       toast("Exported library.m3u", "ok");
@@ -1801,24 +1805,28 @@
 
     /* Add */
     var addPanel = panel("Add Content", "Manually add a movie or a series episode without a file.");
+    addPanel.classList.add("panel-add");
     var addBtn = buttonEl("btn btn-primary", "+ Add content", function () { App.navigate("#add"); });
     addPanel.appendChild(addBtn);
     grid.appendChild(addPanel);
 
     /* Edit */
     var editPanel = panel("Edit Content", "Modify an existing item — titles, sources, posters and more.");
+    editPanel.classList.add("panel-edit");
     var editBtn = buttonEl("btn btn-secondary", "Edit an item…", function () { openEditPicker(); });
     editPanel.appendChild(editBtn);
     grid.appendChild(editPanel);
 
     /* Delete */
     var delPanel = panel("Delete Content", "Remove a movie, an episode, or an entire series.");
+    delPanel.classList.add("panel-delete");
     var delBtn = buttonEl("btn btn-danger", "Delete an item…", function () { openDeletePicker(); });
     delPanel.appendChild(delBtn);
     grid.appendChild(delPanel);
 
     /* Maintenance */
     var maintPanel = panel("Maintenance", "Clear history, watchlist, or reset the whole application.");
+    maintPanel.classList.add("panel-maint");
     var clearH = buttonEl("btn btn-ghost", "Clear history", function () {
       confirmModal("Clear watch history?", "", function () { Store.clearHistory(); toast("History cleared", "ok"); });
     });
@@ -1843,10 +1851,13 @@
         toast("Application reset", "ok");
       });
     });
-    maintPanel.appendChild(clearH);
-    maintPanel.appendChild(clearW);
-    maintPanel.appendChild(clearL);
-    maintPanel.appendChild(reset);
+    var maintBtns = document.createElement("div");
+    maintBtns.className = "maint-actions";
+    maintBtns.appendChild(clearH);
+    maintBtns.appendChild(clearW);
+    maintBtns.appendChild(clearL);
+    maintBtns.appendChild(reset);
+    maintPanel.appendChild(maintBtns);
     grid.appendChild(maintPanel);
 
     root.appendChild(grid);
@@ -1903,6 +1914,8 @@
 
     parsedItems.forEach(function (newIt) {
       var key = normalizeSource(newIt.source);
+      /* Series containers have no source — use a synthetic key so they merge properly. */
+      if (!key && newIt.type === "series" && newIt.seriesId) key = "series:" + newIt.seriesId;
       if (!key) { skipped++; return; }
       if (seen[key]) { skipped++; return; }
       seen[key] = true;
@@ -1949,7 +1962,7 @@
       return;
     }
     var c = mergeIntoLibrary(result.items);
-    toast("Added " + c.added + " · Updated " + c.updated + " · Duplicates skipped " + c.skipped, c.added || c.updated ? "ok" : "ok");
+    toast("Added " + c.added + " · Updated " + c.updated + " · Duplicates skipped " + c.skipped, "ok");
     if (stay) App.render();
     else App.navigate("#home");
   }
@@ -2016,7 +2029,7 @@
         hideProgress();
         var msg = "Could not fetch the playlist from that URL. The link may be wrong or the server blocks it (CORS).";
         if (isHttpsPage && /^http:\/\//i.test(url)) {
-          msg = "Blocked: this page is HTTPS but the playlist URL is HTTP. Browsers refuse to call http:// from a https:// page (mixed content). Fix: serve this app over HTTP instead (run 'python -m http.server 8000' inside the app folder and open http://localhost:8000) — http:// links work there — or use an https:// address if the server offers one.";
+          msg = "Blocked: this page is HTTPS but the playlist URL is HTTP. Browsers refuse to call http:// from a https:// page (mixed content). Fix: open this app over HTTP instead, or use an https:// address if the provider offers one.";
         }
         toast(msg, "err");
         return false;
@@ -2037,7 +2050,7 @@
       jobs.push(function () { return runXtreamFetch(xt.base, xt.username, xt.password, true); });
     }
     if (!jobs.length) {
-      toast("No saved playlist or provider to refresh. Add one in the Library page.", "err");
+      toast("No saved playlist or provider to refresh. Add one in the Settings page.", "err");
       return;
     }
     var p = Promise.resolve();
@@ -2078,7 +2091,7 @@
   function renderAdd() {
     var root = document.createElement("div");
     root.className = "page";
-    var back = backButton("Library", "#settings");
+    var back = backButton("Settings", "#settings");
     root.appendChild(back);
     var header = document.createElement("div");
     header.className = "section-header";

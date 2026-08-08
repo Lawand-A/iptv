@@ -80,10 +80,10 @@
     var m = /^([a-z]+):\/\//i.exec(String(url || ""));
     var targetProto = m ? m[1] : "";
     if (pageProto === "https:" && targetProto === "http") {
-      return "Blocked: this page is HTTPS but the Xtream server is HTTP. Browsers refuse to call http:// from a https:// page (mixed content). Fix: serve this app over HTTP instead (run 'python -m http.server 8000' inside the app folder and open http://localhost:8000) — http:// providers work there — or use an https:// server address if the provider offers one.";
+      return "Blocked: this page is HTTPS but the Xtream server is HTTP. Browsers refuse to call http:// from a https:// page (mixed content). Fix: open this app over HTTP instead, or use an https:// server address if the provider offers one.";
     }
     if (pageProto === "file:") {
-      return "The app is opened straight from disk (file://), and Chrome/Edge block all network requests from file:// pages. Serve the folder over HTTP (e.g. run 'python -m http.server 8000' inside it) and open http://localhost:8000, then try again.";
+      return "The app is opened straight from disk (file://), and Chrome/Edge block all network requests from file:// pages. Open this app via http:// or https://, then try again.";
     }
     return "Could not reach the provider: either its server does not allow cross-origin requests (no CORS headers) or it is unreachable. Open the server URL in a browser tab to confirm it responds. If it loads there but not here, the server blocks CORS and no static HTML page can read it — ask the provider to enable CORS.";
   }

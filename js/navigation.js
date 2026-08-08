@@ -29,58 +29,7 @@
     return app && app.contains(el);
   }
 
-  function centerX(el) { var r = el.getBoundingClientRect(); return r.left + r.width / 2; }
-  function centerY(el) { var r = el.getBoundingClientRect(); return r.top + r.height / 2; }
-
-  /* Cluster focusables into horizontal rows, sorted top-to-bottom.
-     Within each row items are sorted left-to-right. */
-  function buildRows() {
-    var list = getFocusables();
-    list.sort(function (a, b) { return centerY(a) - centerY(b); });
-
-    var rows = [];
-    list.forEach(function (el) {
-      var cy = centerY(el);
-      var h = el.getBoundingClientRect().height;
-      var placed = false;
-      for (var i = 0; i < rows.length; i++) {
-        if (Math.abs(cy - rows[i].cy) < Math.max(30, rows[i].height * 0.5)) {
-          rows[i].els.push(el);
-          placed = true;
-          break;
-        }
-      }
-      if (!placed) {
-        rows.push({ cy: cy, height: h, els: [el] });
-      }
-    });
-    rows.forEach(function (r) {
-      r.els.sort(function (a, b) { return centerX(a) - centerX(b); });
-    });
-    return rows;
-  }
-
-  function findPosition(rows, el) {
-    for (var i = 0; i < rows.length; i++) {
-      var idx = rows[i].els.indexOf(el);
-      if (idx >= 0) return { row: i, idx: idx };
-    }
-    return null;
-  }
-
-  function nearestInRow(rowEls, x) {
-    var best = null, bestD = Infinity;
-    rowEls.forEach(function (el) {
-      var d = Math.abs(centerX(el) - x);
-      if (d < bestD) { bestD = d; best = el; }
-    });
-    return best;
-  }
-
   function move(dir) {
-    var rows = buildRows();
-    if (!rows.length) return;
-
     var current = document.activeElement;
     if (current === document.body || current === null) current = null;
     if (current && !current.classList.contains("focusable")) current = null;
@@ -91,37 +40,106 @@
     }
 
     usedKeyboard = true;
-    var pos = findPosition(rows, current);
-    if (!pos) {
-      focusFirstContent();
-      return;
+
+    /* 1-D gap between two intervals — 0 when they overlap. Full-width bars
+       (search inputs, the file drop zone) overlap every column, so they are
+       reachable from anywhere instead of being skipped. */
+    function gap(a1, a2, b1, b2) {
+      return b1 > a2 ? b1 - a2 : a1 > b2 ? a1 - b2 : 0;
     }
 
-    var rowEls = rows[pos.row].els;
-    var target = null;
+    var curRect = current.getBoundingClientRect();
+    var cx = curRect.left + curRect.width / 2;
+    var cy = curRect.top + curRect.height / 2;
+    var horizontal = dir === "left" || dir === "right";
+    var sgn = dir === "right" || dir === "down" ? 1 : -1;
+    var fromLink = !horizontal && current.classList.contains("section-link");
 
-    if (dir === "left" || dir === "right") {
-      var idx = pos.idx + (dir === "right" ? 1 : -1);
-      if (idx >= 0 && idx < rowEls.length) {
-        target = rowEls[idx];
-      } else {
-        /* edge of row — continue on the row below (right) / above (left) */
-        var nextRow = rows[pos.row + (dir === "right" ? 1 : -1)];
-        if (nextRow) {
-          target = nearestInRow(nextRow.els, centerX(current));
-        } else {
-          /* wrap around to the opposite end of the same row */
-          target = rowEls[idx < 0 ? rowEls.length - 1 : 0];
+    var best = null, bestScore = Infinity;
+    var aligned = null, alignedScore = Infinity;
+    var flowBest = null, flowScore = Infinity;
+    var wrapBest = null, wrapScore = Infinity;
+
+    /* The fixed topbar stays at the viewport top while content scrolls, so
+       plain spatial scoring against it is unreliable (the "up from the top
+       button sometimes fails" bug). Instead: topbar items are excluded from
+       normal scoring, and ArrowUp lands on the navbar exactly when nothing
+       in the page content is above the current element. */
+    var topbar = document.getElementById("topbar");
+    var inTopbar = topbar && topbar.contains(current);
+
+    getFocusables().forEach(function (el) {
+      if (el === current) return;
+      if (topbar && topbar.contains(el) && !inTopbar) return;
+      var r = el.getBoundingClientRect();
+      var ex = r.left + r.width / 2;
+      var ey = r.top + r.height / 2;
+
+      if (horizontal) {
+        var hDist = sgn * (ex - cx);
+        var vGap = gap(curRect.top, curRect.bottom, r.top, r.bottom);
+        if (hDist > 4) {
+          if (vGap === 0) {
+            /* same visual row — always beats a nearer element on another row */
+            if (hDist < alignedScore) { alignedScore = hDist; aligned = el; }
+          } else {
+            var hScore = hDist + vGap * 2;
+            if (hScore < bestScore) { bestScore = hScore; best = el; }
+          }
         }
-      }
-    } else if (dir === "up" || dir === "down") {
-      var nextPos = pos.row + (dir === "down" ? 1 : -1);
-      if (nextPos >= 0 && nextPos < rows.length) {
-        target = nearestInRow(rows[nextPos].els, centerX(current));
+        /* flow: at the row edge, continue on the next line down (right) or
+           previous line up (left), taking the edge element of that line */
+        var fDist = sgn > 0 ? ey - cy : cy - ey;
+        if (fDist > 4) {
+          var fScore = fDist * 10 + (sgn > 0 ? r.left : -r.right);
+          if (fScore < flowScore) { flowScore = fScore; flowBest = el; }
+        }
+        /* wrap: nearest band vertically, extreme element in direction */
+        var wScore = Math.abs(ey - cy) * 10 + (sgn > 0 ? r.left : -r.right);
+        if (wScore < wrapScore) { wrapScore = wScore; wrapBest = el; }
       } else {
-        /* top/bottom edge — wrap to the other end */
-        var wrapRow = rows[dir === "down" ? 0 : rows.length - 1];
-        target = nearestInRow(wrapRow.els, centerX(current));
+        var vDist = sgn * (ey - cy);
+        var hGap = gap(curRect.left, curRect.right, r.left, r.right);
+        if (vDist > 4) {
+          /* From a "View all" link prefer the first (leftmost) element of the
+             next band. */
+          if (fromLink) {
+            var lScore = vDist * 10 + r.left;
+            if (lScore < bestScore) { bestScore = lScore; best = el; }
+          } else if (hGap === 0) {
+            /* same column — always beats a nearer element in another column,
+               which is what keeps multi-column form pages sane */
+            if (vDist < alignedScore) { alignedScore = vDist; aligned = el; }
+          } else {
+            var vScore = vDist + hGap * 2;
+            if (vScore < bestScore) { bestScore = vScore; best = el; }
+          }
+        }
+        /* wrap: the extreme element in the direction of travel */
+        var w2Score = (sgn > 0 ? ey : -ey) + hGap * 2;
+        if (w2Score < wrapScore) { wrapScore = w2Score; wrapBest = el; }
+      }
+    });
+
+    var target = aligned || best || (horizontal ? flowBest : null) || wrapBest;
+
+    /* ArrowUp with nothing above in the content → go to the navbar (the
+       horizontally nearest topbar item). Reaching the navbar from anywhere
+       else is impossible, as required. */
+    if (!inTopbar && dir === "up" && !aligned && !best && topbar) {
+      var tbItems = [];
+      topbar.querySelectorAll(".focusable").forEach(function (el) {
+        if (isVisible(el)) tbItems.push(el);
+      });
+      if (tbItems.length) {
+        var tbBest = null, tbScore = Infinity;
+        tbItems.forEach(function (el) {
+          var r = el.getBoundingClientRect();
+          var hGap = gap(curRect.left, curRect.right, r.left, r.right);
+          var d = hGap === 0 ? 0 : hGap * 2 + Math.abs((r.left + r.width / 2) - cx);
+          if (d < tbScore) { tbScore = d; tbBest = el; }
+        });
+        target = tbBest || tbItems[0];
       }
     }
 
@@ -188,7 +206,12 @@
     if (typing) {
       if (key === "Enter") return;
       if (key === "ArrowDown" || key === "ArrowUp") {
-        if (e.target && e.target.tagName === "INPUT" && e.target.type === "text") {
+        var t = e.target;
+        /* Text-like inputs, textareas and dropdowns: up/down moves to the
+           next field instead of editing text / cycling the dropdown
+           selection. Use Enter to open a dropdown and change its value. */
+        if (t && (t.tagName === "SELECT" || t.tagName === "TEXTAREA" ||
+            (t.tagName === "INPUT" && /^(text|password|url|email|search|number|tel)$/.test(t.type)))) {
           e.preventDefault();
           move(key === "ArrowDown" ? "down" : "up");
         }

@@ -228,6 +228,13 @@
     }, 50);
   }
 
+  /* Flush pending writes when the tab is about to close. */
+  if (typeof window !== "undefined") {
+    window.addEventListener("beforeunload", function () {
+      if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; persistNow(); }
+    });
+  }
+
   function getItem(id) {
     return getItems().find(function (it) { return it.id === id; }) || null;
   }
@@ -376,7 +383,11 @@
     var entry = Object.assign({ id: id, lastOpened: now(), position: 0, duration: 0, progress: 0 }, extra || {});
     var idx = h.findIndex(function (x) { return x.id === id; });
     if (idx >= 0) h[idx] = entry; else h.push(entry);
-    if (h.length > MAX_HISTORY) h.length = MAX_HISTORY;
+    /* Keep newest entries: sort by lastOpened desc, then cap. */
+    if (h.length > MAX_HISTORY) {
+      h.sort(function (a, b) { return b.lastOpened - a.lastOpened; });
+      h.length = MAX_HISTORY;
+    }
     write(KEYS.history, h);
   }
   function getHistoryEntry(id) {

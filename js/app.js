@@ -20,10 +20,14 @@
     var parts = path.split("/").filter(Boolean);
     return {
       name: parts[0] || "home",
-      arg: parts[1] ? decodeURIComponent(parts[1]) : null,
+      arg: parts[1] ? safeDecode(parts[1]) : null,
       query: query,
       hash: hash
     };
+  }
+
+  function safeDecode(s) {
+    try { return decodeURIComponent(s); } catch (e) { return s; }
   }
 
   function openItem(id) {

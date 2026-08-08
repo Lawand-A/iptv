@@ -19,7 +19,7 @@
     if (UI && UI.toast) UI.toast(msg, isErr ? "err" : undefined);
   }
 
-  function pad(n) { return n < 10 ? "0" + n : "" + n; }
+  function pad(n) { n = parseInt(n, 10) || 0; return n < 10 ? "0" + n : "" + n; }
   function fmt(sec) {
     if (!isFinite(sec)) return "0:00";
     sec = Math.floor(sec);
@@ -34,7 +34,7 @@
     watchedTimer = setTimeout(function () {
       Store.markWatched(item.id);
       notify("Marked as watched");
-      if (UI) UI.refreshBadges && UI.refreshBadges();
+      if (global.UI) UI.refreshBadges && UI.refreshBadges();
     }, WATCHED_SECONDS * 1000);
   }
 
@@ -505,7 +505,10 @@
   function toggleFullscreen(wrap) {
     var target = wrap;
     if (document.fullscreenElement === target || document.webkitFullscreenElement === target) {
-      if (document.exitFullscreen) document.exitFullscreen().catch(function () { /* ignore */ });
+      if (document.exitFullscreen) {
+        var p = document.exitFullscreen();
+        if (p && p.catch) p.catch(function () { /* ignore */ });
+      }
       else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
     } else {
       var r = target.requestFullscreen ? target.requestFullscreen()
@@ -519,6 +522,16 @@
     return isPlay
       ? '<svg class="bar-ico" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>'
       : '<svg class="bar-ico" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>';
+  }
+
+  function volumeIcon(vol, muted) {
+    if (muted || vol === 0) {
+      return '<svg class="bar-ico" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM19 12c0 3.86-2.69 7.11-6.32 7.95V21h-.79l-4.62-4H5c-1.1 0-2-.9-2-2v-4c0-1.1.9-2 2-2h2.29l4.62-4h.79v1.05C16.31 4.89 19 8.14 19 12z"/></svg>';
+    }
+    if (vol < 0.5) {
+      return '<svg class="bar-ico" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5 9v6h2.29l4.62 4h.79V5h-.79L7.29 9H5zm13 3c0 1.77-1.02 3.29-2.5 4.03V7.97c1.48.74 2.5 2.26 2.5 4.03z"/></svg>';
+    }
+    return '<svg class="bar-ico" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>';
   }
 
   /* Same circular-arrow icon for both directions; the forward button
@@ -580,6 +593,55 @@
     timeEl.className = "bar-time";
     timeEl.textContent = "0:00 / 0:00";
 
+    /* Volume button + slider */
+    var lastVolume = video.volume || 1;
+    var volBtn = makeBarButton("bar-btn bar-vol", "Mute", volumeIcon(video.volume, video.muted));
+    var volSlider = document.createElement("input");
+    volSlider.type = "range";
+    volSlider.min = "0";
+    volSlider.max = "1";
+    volSlider.step = "0.05";
+    volSlider.value = String(video.muted ? 0 : video.volume);
+    volSlider.className = "bar-volume focusable";
+    volSlider.setAttribute("aria-label", "Volume");
+
+    function updateVolIcon() {
+      volBtn.innerHTML = volumeIcon(video.volume, video.muted);
+      volBtn.setAttribute("aria-label", video.muted ? "Unmute" : "Mute");
+    }
+    function setVolume(v) {
+      v = Math.max(0, Math.min(1, parseFloat(v) || 0));
+      video.muted = v === 0;
+      video.volume = v === 0 ? lastVolume : v;
+      if (v > 0) lastVolume = v;
+      volSlider.value = String(video.muted ? 0 : video.volume);
+      updateVolIcon();
+    }
+    volBtn.addEventListener("click", function () {
+      if (video.muted || video.volume === 0) {
+        video.muted = false;
+        video.volume = lastVolume || 0.5;
+      } else {
+        lastVolume = video.volume || 1;
+        video.muted = true;
+      }
+      volSlider.value = String(video.muted ? 0 : video.volume);
+      updateVolIcon();
+      poke();
+    });
+    volSlider.addEventListener("input", function () {
+      var v = parseFloat(volSlider.value) || 0;
+      video.muted = v === 0;
+      video.volume = v === 0 ? (lastVolume || 0.5) : v;
+      if (v > 0) lastVolume = v;
+      updateVolIcon();
+      poke();
+    });
+    video.addEventListener("volumechange", function () {
+      volSlider.value = String(video.muted ? 0 : video.volume);
+      updateVolIcon();
+    });
+
     var fsBtn = makeBarButton("bar-btn bar-fs", "Toggle fullscreen", fsIcon());
     seekFsBtn = fsBtn;
     fsBtn.addEventListener("click", function () { toggleFullscreen(wrap); poke(); });
@@ -592,6 +654,8 @@
     var spacer = document.createElement("span");
     spacer.className = "bar-spacer";
     row.appendChild(spacer);
+    row.appendChild(volBtn);
+    row.appendChild(volSlider);
     row.appendChild(fsBtn);
 
     bar.appendChild(progress);
@@ -778,12 +842,18 @@
       }
     });
 
+    var lastHistoryWrite = 0;
     el.addEventListener("timeupdate", function () {
       if (item.live) return;
+      var now = Date.now();
+      if (now - lastHistoryWrite < 3000) return;
       var keep = (el.duration || 0) - el.currentTime;
-      if (isFinite(keep) && keep > 0.5) Store.addToHistory(currentId, {
-        position: el.currentTime, duration: el.duration, progress: el.duration ? Math.round(el.currentTime / el.duration * 100) : 0
-      });
+      if (isFinite(keep) && keep > 0.5) {
+        lastHistoryWrite = now;
+        Store.addToHistory(currentId, {
+          position: el.currentTime, duration: el.duration, progress: el.duration ? Math.round(el.currentTime / el.duration * 100) : 0
+        });
+      }
     });
 
     el.addEventListener("pause", savePosition);
@@ -791,7 +861,7 @@
       Store.saveProgress(currentId, el.duration || 0, el.duration || 0);
       Store.markWatched(currentId);
       notify("Playback finished — marked as watched");
-      if (UI) UI.refreshBadges && UI.refreshBadges();
+      if (global.UI) UI.refreshBadges && UI.refreshBadges();
     });
 
     loadCandidate();
@@ -855,6 +925,8 @@
       mpegtsInstance = null;
     }
     if (video) {
+      video.__mpegtsManaged = false;
+      video.__hlsManaged = false;
       savePosition();
       video.pause();
       video = null;
@@ -870,7 +942,7 @@
   /* Public API */
   function play(itemId) {
     var item = Store.getItem(itemId);
-    if (!item) { notify("Content not found.", true); if (App) App.navigate("#home"); return; }
+    if (!item) { notify("Content not found.", true); if (global.App) App.navigate("#home"); return; }
 
     /* Defensive: stale items stored as "direct" may still hold embed sources
        (star-prefixed links or iframe HTML from older imports). Play them as

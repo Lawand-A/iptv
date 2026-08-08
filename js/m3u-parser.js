@@ -92,7 +92,12 @@
     while ((m = ATTR_RE.exec(text)) !== null) {
       attrs[m[1].toLowerCase()] = m[2];
     }
-    var comma = text.lastIndexOf(",");
+    var comma = -1;
+    var inQuote = false;
+    for (var i = text.length - 1; i >= 0; i--) {
+      if (text[i] === '"') inQuote = !inQuote;
+      else if (text[i] === ',' && !inQuote) { comma = i; break; }
+    }
     var title = comma >= 0 ? text.slice(comma + 1).trim() : text.trim();
     return { attrs: attrs, title: title };
   }
@@ -186,7 +191,7 @@
         || (isLiveSource(entry.source)
             && tvgType !== "vod" && tvgType !== "movie"
             && tvgType !== "series" && tvgType !== "episode"),
-      poster: entry.attrs["tvg-logo"] || entry.attrs["logo"] || entry.attrs["tvg-logo"],
+      poster: entry.attrs["tvg-logo"] || entry.attrs["logo"],
       group: entry.attrs["group-title"] || entry.group || "",
       description: entry.attrs["tvg-description"] || entry.attrs["description"] || "",
       tvgId: entry.attrs["tvg-id"] || null,
@@ -206,7 +211,7 @@
       item.seriesName = series.seriesName;
       item.seriesId = "series-" + stableId(series.seriesName);
       item.season = series.season;
-      item.episode = series.episode;
+      item.episode = series.episodeNumber;
       item.episodeNumber = series.episodeNumber;
       item.episodeTitle = series.episodeTitle || title;
     }
