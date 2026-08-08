@@ -145,6 +145,24 @@ textarea { resize: vertical; min-height: 80px; }
   justify-content: space-between;
   margin-bottom: 14px;
 }
+/* Combined back-button + title row (live & category pages). Keeps the back
+   arrow and the title on one line instead of stacking them on mobile. */
+.page-head { gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+.page-head-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.page-head-left .back-btn { margin: 0; }
+.page-head-left .section-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.page-head-action { flex-shrink: 0; }
 .section-title {
   font-size: 24px;
   font-weight: 800;
@@ -484,17 +502,32 @@ textarea { resize: vertical; min-height: 80px; }
   max-width: 900px;
 }
 .episode {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 10px;
   background: var(--bg-elev);
   border-radius: 10px;
-  padding: 12px 16px;
-  outline: none;
-  cursor: pointer;
+  padding: 10px 12px;
+  min-width: 0;
   transition: background .15s;
 }
 .episode:hover { background: var(--bg-elev2); }
+.episode-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: none;
+  border: none;
+  padding: 2px 0;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+.episode-edit { flex-shrink: 0; white-space: nowrap; }
 .episode-thumb {
   position: relative;
   width: 120px;
@@ -526,9 +559,9 @@ textarea { resize: vertical; min-height: 80px; }
   flex-shrink: 0;
 }
 .episode-body { flex: 1; min-width: 0; }
-.episode-name { font-weight: 700; }
-.episode-sub { color: var(--text-faint); font-size: 13px; }
-.episode-watch { color: var(--text-dim); flex-shrink: 0; font-size: 13px; white-space: nowrap; }
+.episode-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.episode-sub { color: var(--text-faint); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.episode-watch { color: var(--text-dim); flex-shrink: 0; font-size: 13px; white-space: nowrap; margin-left: auto; }
 .episode .ep-progress {
   position: absolute;
   bottom: 0; left: 0;
@@ -689,11 +722,12 @@ textarea { resize: vertical; min-height: 80px; }
 }
 .player-head {
   display: flex;
-  align-items: center;
-  gap: 14px;
+  flex-direction: column;
+  gap: 6px;
   margin-top: 22px;
 }
-.player-head h2 { font-size: 26px; font-weight: 800; flex: 1; min-width: 0; }
+.player-head h2 { font-size: 26px; font-weight: 800; min-width: 0; }
+.player-head-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .player-msg {
   margin-top: 14px;
   padding: 16px 18px;
@@ -709,6 +743,17 @@ textarea { resize: vertical; min-height: 80px; }
 .player-note {
   border-left: 4px solid var(--warn);
 }
+.player-info {
+  margin-top: 14px;
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.55;
+}
+.player-info-title { font-weight: 700; color: var(--text); margin-bottom: 4px; }
+.player-info-link { overflow-wrap: anywhere; }
+.player-info-link a { color: var(--accent); text-decoration: none; }
+.player-info-link a:hover { text-decoration: underline; }
+.player-info-desc { margin-top: 4px; }
 
 /* ---------- Live (two-pane: channel list + inline player) ---------- */
 .live-page { max-width: 1500px; margin: 0 auto; padding: 0 20px 60px; }
@@ -830,16 +875,19 @@ textarea { resize: vertical; min-height: 80px; }
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 100%;
   aspect-ratio: 16 / 9;
   border-radius: 12px;
   border: 1px dashed rgba(255, 255, 255, 0.18);
   color: var(--text-faint);
-  font-size: 18px;
+  font-size: 16px;
+  text-align: center;
+  padding: 16px;
   background: var(--bg-elev);
 }
 
 /* ---------- Search ---------- */
-.search-bar { position: relative; margin-top: 18px; max-width: none; }
+.search-bar { position: relative; margin-top: 18px; margin-bottom: 22px; max-width: none; }
 .search-bar input { font-size: 20px; padding: 14px 16px; border-radius: 12px; }
 .search-results { margin-top: 10px; }
 .result-list { display: flex; flex-direction: column; gap: 6px; max-width: 900px; }
@@ -1024,15 +1072,19 @@ textarea { resize: vertical; min-height: 80px; }
   .topbar-inner { padding: 8px 12px; }
   .hero-title { font-size: 32px; }
   .hero { min-height: 300px; }
+  .hero-body { padding: 18px 16px; }
+  .hero-actions .btn { padding: 10px 16px; font-size: 14px; }
   .detail-header { flex-direction: column; align-items: flex-start; margin-top: -40px; }
   .detail-info { padding-top: 10px; }
   .detail-poster { width: 180px; }
   .detail-title { font-size: 28px; }
   :root { --card-w: 150px; --card-h: 226px; --row-h: 280px; }
-  .live-layout { flex-direction: column; }
+  .live-layout { flex-direction: column; align-items: stretch; }
   .live-list { width: 100%; max-width: none; order: 2; }
   .live-list-body { max-height: 42vh; }
-  .live-player { order: 1; }
+  .live-player { order: 1; width: 100%; }
+  .live-page { padding: 0 12px 60px; }
+  .page { padding: 0 12px; }
 }
 
 @media (max-width: 520px) {
@@ -1040,7 +1092,23 @@ textarea { resize: vertical; min-height: 80px; }
   .form-grid { grid-template-columns: 1fr; }
   .modal .form-grid { grid-template-columns: 1fr; }
   .player-head h2 { font-size: 20px; }
-  .episode-thumb { width: 90px; }
+  .episode { padding: 8px 10px; gap: 8px; }
+  .episode-main { gap: 10px; }
+  .episode-thumb { width: 72px; }
+  .episode-num { display: none; }
+  .episode-watch { font-size: 12px; }
+  .episode-edit { padding: 6px 10px; }
+  .section-title { font-size: 20px; }
+  .page-head { gap: 10px; margin-top: 16px; margin-bottom: 12px; }
+  .page-head-left { gap: 14px; }
+  .page-head-action { padding: 8px 12px; font-size: 13px; }
+  .live-item { padding: 8px 10px; gap: 8px; font-size: 13px; }
+  .live-ico { width: 26px; height: 26px; font-size: 10px; }
+  .live-grp { max-width: 80px; font-size: 10px; }
+  .live-list-body { max-height: 38vh; }
+  .hero-title { font-size: 26px; }
+  .hero-body { padding: 14px 14px; }
+  .hero-desc { -webkit-line-clamp: 2; }
 }
 
 @media (min-width: 1600px) {
