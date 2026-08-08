@@ -36,7 +36,12 @@ body {
   line-height: 1.5;
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
 }
+
+#app { flex: 1 0 auto; }
 
 button {
   font-family: inherit;
@@ -1288,8 +1293,8 @@ textarea { resize: vertical; min-height: 80px; }
 
 /* ---------- Footer ---------- */
 .app-footer {
+  flex-shrink: 0;
   padding: 10px 16px;
-  margin-top: auto;
   background: var(--bg-elev);
   border-top: 1px solid var(--bg-elev3);
 }
@@ -1300,40 +1305,81 @@ textarea { resize: vertical; min-height: 80px; }
   align-items: center;
   justify-content: center;
 }
+.app-footer-donate {
+  display: flex;
+  justify-content: center;
+  margin-top: 8px;
+}
 .footer-btn {
-  padding: 5px 12px;
+  padding: 5px 8px;
   font-size: 12px;
   font-weight: 600;
-  border: 1px solid var(--bg-elev3);
-  border-radius: 6px;
+  border: none;
+  border-radius: 0;
   background: transparent;
   color: var(--text-dim);
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: color 0.15s ease;
   font-family: inherit;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  line-height: 1.6;
+  position: relative;
 }
 .footer-btn:hover,
 .footer-btn:focus-visible {
-  background: var(--bg-elev2);
+  background: transparent;
   color: var(--text);
 }
-.footer-btn.footer-primary {
+.footer-btn:hover::after,
+.footer-btn:focus-visible::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
   background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-.footer-btn.footer-primary:hover,
-.footer-btn.footer-primary:focus-visible {
-  background: var(--accent-hi);
 }
 .footer-btn.footer-danger {
-  border-color: var(--err);
+  border: 1px solid var(--err);
+  border-radius: 6px;
   color: var(--err);
 }
 .footer-btn.footer-danger:hover,
 .footer-btn.footer-danger:focus-visible {
   background: var(--err);
   color: #fff;
+}
+.footer-btn.footer-danger:hover::after,
+.footer-btn.footer-danger:focus-visible::after {
+  display: none;
+}
+.footer-btn.footer-primary {
+  border: none;
+  border-radius: 0;
+  color: var(--err);
+}
+.footer-btn.footer-primary:hover,
+.footer-btn.footer-primary:focus-visible {
+  background: transparent;
+  color: var(--err);
+}
+.footer-btn.footer-primary:hover::after,
+.footer-btn.footer-primary:focus-visible::after {
+  background: var(--err);
+}
+.footer-btn.footer-donate {
+  background: var(--bg-elev2);
+  border: 1px solid var(--bg-elev3);
+  border-radius: 6px;
+  color: var(--text-dim);
+}
+.footer-btn.footer-donate:hover,
+.footer-btn.footer-donate:focus-visible {
+  background: var(--bg-elev3);
+  color: var(--text);
 }
 @media (max-width: 520px) {
   .footer-btn { padding: 5px 8px; font-size: 11px; }
