@@ -86,7 +86,7 @@
   /* ---------- Raw MPEG-TS (.ts / extensionless streams) ----------
      Chromium browsers cannot play MPEG-TS natively in a <video> tag, so raw
      .ts live streams need MSE via mpegts.js (loaded on demand, like hls.js). */
-  var MPEGTS_CDN = "https://cdn.jsdelivr.net/npm/mpegts.js@1/dist/mpegts.js";
+  var MPEGTS_CDN = "https://cdn.jsdelivr.net/npm/mpegts.js@1.8.1/dist/mpegts.js";
   var mpegtsScriptPromise = null;
   var mpegtsInstance = null;
 
@@ -362,7 +362,9 @@
           return;
         }
         if (window.console) console.warn("[player] mpegts not progressing (stuck at " + lastTime + "s) with data buffered — advancing");
-        video.__lastErr = "Stream delivers data but the browser cannot decode it (unsupported video/audio codec)";
+        video.__lastErr = video.__mpegtsHevc
+          ? "This channel uses H.265 (HEVC) video, which this browser cannot decode"
+          : "Stream delivers data but the browser cannot decode it (unsupported video/audio codec)";
         if (video.__mpegtsSrc) probeSource(video.__mpegtsSrc);
         if (onFail) {
           video.__suppressError = true;
@@ -374,11 +376,36 @@
     }, 500);
   }
 
+  var mseCapsLogged = false;
+
+  /* Log once which codecs this browser's MediaSource can actually decode,
+     so unsupported-codec failures are explainable at a glance. */
+  function logMseCapabilities() {
+    if (mseCapsLogged) return;
+    mseCapsLogged = true;
+    try {
+      var MS = window.MediaSource || window.WebKitMediaSource;
+      if (!MS || !MS.isTypeSupported) return;
+      var tests = [
+        ["h264", 'video/mp4; codecs="avc1.4d4028"'],
+        ["h265", 'video/mp4; codecs="hvc1.1.6.L120.90"'],
+        ["aac-lc", 'audio/mp4; codecs="mp4a.40.2"'],
+        ["he-aac", 'audio/mp4; codecs="mp4a.40.5"'],
+        ["mp3", "audio/mpeg"],
+        ["mp3-mp4", 'audio/mp4; codecs="mp3"']
+      ];
+      var out = {};
+      for (var i = 0; i < tests.length; i++) out[tests[i][0]] = !!MS.isTypeSupported(tests[i][1]);
+      if (window.console) console.log("[player] MSE codec support:", out);
+    } catch (e) { /* ignore */ }
+  }
+
   function initMpegts(video, src, item, onFail, opts) {
     if (!window.mpegts || !mpegts.isSupported()) {
       video.src = src;
       return;
     }
+    logMseCapabilities();
     video.__mpegtsManaged = true;
     video.__mpegtsSrc = src;
     video.__mpegtsItem = item;
@@ -404,6 +431,45 @@
       } else {
         showPlayError(video, Store.getItem(currentId) || { source: src });
       }
+    });
+    player.on(mpegts.Events.MEDIA_INFO, function (mi) {
+      if (!mi) return;
+      if (mpegtsInstance !== player) return;
+      var vc = String(mi.videoCodec || "");
+      var ac = String(mi.audioCodec || "");
+      var isHevc = vc === "h265" || vc === "hvc1" || vc === "hev1";
+      /* Chromium's MSE cannot decode HEVC, AC-3/E-AC-3 or HE-AAC/LATM audio.
+         Channels using any of these stall at 0 forever — fail fast instead and
+         explain why. (MP3/MP2 is fine in MSE since mpegts.js v1.8.1.) */
+      var isBadAudio = ac === "ac3" || ac === "eac3" || ac === "latm_aac";
+      if (!isHevc && !isBadAudio) return;
+      if (window.console) console.warn("[player] unsupported codec: video=" + vc + " audio=" + ac);
+      video.__mpegtsHevc = isHevc;
+      /* HEVC with a decodable audio track + a WebCodecs VideoDecoder →
+         decode the video via WebCodecs (audio still goes through MSE). */
+      if (isHevc && !webCodecs && !isBadAudio && window.VideoDecoder && video.__mpegtsItem) {
+        if (window.console) console.warn("[player] HEVC — retrying with WebCodecs decode");
+        try { player.destroy(); } catch (e) { /* ignore */ }
+        if (mpegtsInstance === player) mpegtsInstance = null;
+        video.__mpegtsManaged = false;
+        initMpegts(video, video.__mpegtsSrc, video.__mpegtsItem, onFail, { webCodecs: true });
+        return;
+      }
+      try { player.destroy(); } catch (e) { /* ignore */ }
+      if (mpegtsInstance === player) mpegtsInstance = null;
+      video.__mpegtsManaged = false;
+      var msg;
+      if (isHevc && !window.VideoDecoder) {
+        msg = "This channel uses H.265 (HEVC) video, which this browser cannot decode. Try Microsoft Edge (with the HEVC Video Extensions installed).";
+      } else if (isHevc) {
+        msg = "This channel uses H.265 (HEVC) video with an audio codec this browser cannot play alongside it.";
+      } else if (ac === "ac3" || ac === "eac3") {
+        msg = "This channel uses AC-3/E-AC-3 audio, which this browser cannot play.";
+      } else {
+        msg = "This channel uses an audio codec this browser cannot play (" + ac + ").";
+      }
+      video.__lastErr = msg;
+      showPlayError(video, Store.getItem(currentId) || { source: src });
     });
     var p = player.play();
     if (p && p.catch) p.catch(function () { showTapHint(video); });
@@ -835,16 +901,31 @@
 
     var head = document.createElement("div");
     head.className = "player-head";
-    var back = document.createElement("button");
-    back.className = "btn btn-secondary focusable";
-    back.innerHTML = "&larr; Back";
-    back.addEventListener("click", function () { App.navigate("#home"); });
     var title = document.createElement("h2");
     title.textContent = item.type === "episode"
       ? (item.seriesName ? item.seriesName + " " : "") + "S" + pad(item.season) + "E" + pad(item.episodeNumber) + " — " + (item.episodeTitle || item.title)
       : item.title;
-    head.appendChild(back);
+
+    /* Details target: episode -> series page, movie -> movie details. */
+    var detailsTarget = item.type === "episode" && item.seriesId
+      ? "#series/" + encodeURIComponent(item.seriesId)
+      : "#movie/" + encodeURIComponent(item.id);
+
+    var actions = document.createElement("div");
+    actions.className = "player-head-actions";
+    var backDetails = document.createElement("button");
+    backDetails.className = "btn btn-secondary btn-sm focusable";
+    backDetails.innerHTML = "&larr; Back";
+    backDetails.addEventListener("click", function () { App.navigate(detailsTarget); });
+    var goHome = document.createElement("button");
+    goHome.className = "btn btn-secondary btn-sm focusable";
+    goHome.textContent = "Home";
+    goHome.addEventListener("click", function () { App.navigate("#home"); });
+    actions.appendChild(backDetails);
+    actions.appendChild(goHome);
+
     head.appendChild(title);
+    head.appendChild(actions);
 
     var wrap = document.createElement("div");
     wrap.className = "player-wrap";
@@ -863,9 +944,37 @@
     note.style.display = "none";
     note.innerHTML = "Opening the player for at least 60 seconds marks this item as watched.";
 
+    /* Small info block under the player: title, source link, description. */
+    var info = document.createElement("div");
+    info.className = "player-info";
+    var infoTitle = document.createElement("div");
+    infoTitle.className = "player-info-title";
+    infoTitle.textContent = item.type === "episode"
+      ? (item.seriesName ? item.seriesName + " " : "") + "S" + pad(item.season) + "E" + pad(item.episodeNumber) + " — " + (item.episodeTitle || item.title)
+      : item.title;
+    var infoLink = document.createElement("div");
+    infoLink.className = "player-info-link";
+    if (/^https?:\/\//i.test(item.source || "") || /^\/\//.test(item.source || "")) {
+      var a = document.createElement("a");
+      a.href = item.source;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.textContent = item.source;
+      infoLink.appendChild(a);
+    } else if (item.source) {
+      infoLink.textContent = item.source;
+    }
+    var infoDesc = document.createElement("div");
+    infoDesc.className = "player-info-desc";
+    infoDesc.textContent = item.description || "";
+    info.appendChild(infoTitle);
+    if (infoLink.textContent) info.appendChild(infoLink);
+    if (infoDesc.textContent) info.appendChild(infoDesc);
+
     root.appendChild(head);
     root.appendChild(wrap);
     root.appendChild(note);
+    root.appendChild(info);
 
     page.innerHTML = "";
     page.appendChild(root);
@@ -881,7 +990,13 @@
 
   function escape() {
     if (inlineActive) { cancel(); return; }
-    if (active) { App.navigate("#home"); }
+    if (active) {
+      var item = currentId != null ? Store.getItem(currentId) : null;
+      var target = item && item.type === "episode" && item.seriesId
+        ? "#series/" + encodeURIComponent(item.seriesId)
+        : "#home";
+      App.navigate(target);
+    }
   }
 
   /* Play an item inline inside a given container (used by the Live view,

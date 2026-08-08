@@ -105,7 +105,9 @@
 
   function seriesList() {
     var bySeries = {};
-    Store.getItems().forEach(function (it) {
+    var all = Store.getItems();
+    for (var i = 0; i < all.length; i++) {
+      var it = all[i];
       if (it.type === "series") {
         bySeries[it.seriesId] = {
           seriesId: it.seriesId,
@@ -116,8 +118,10 @@
           episodes: []
         };
       }
-    });
-    episodes().forEach(function (ep) {
+    }
+    for (var j = 0; j < all.length; j++) {
+      var ep = all[j];
+      if (ep.type !== "episode") continue;
       var key = ep.seriesId || "series-" + M3UParser.stableId(ep.seriesName || ep.title);
       if (!bySeries[key]) {
         bySeries[key] = {
@@ -134,7 +138,7 @@
       if (ep.poster && !s.poster) s.poster = ep.poster;
       if (ep.description && !s.description) s.description = ep.description;
       if (ep.group && !s.group) s.group = ep.group;
-    });
+    }
     var list = Object.keys(bySeries).map(function (k) { return bySeries[k]; });
     list.forEach(function (s) {
       s.episodes.sort(function (a, b) {
@@ -143,6 +147,16 @@
     });
     list.sort(function (a, b) { return a.seriesName.localeCompare(b.seriesName); });
     return list;
+  }
+
+  /* Index of series keyed by seriesId, built from a single full pass over the
+     library (cheap), reused by renderHome so it never calls seriesList() again
+     per item. */
+  function seriesById(list) {
+    list = list || seriesList();
+    var map = {};
+    for (var i = 0; i < list.length; i++) map[list[i].seriesId] = list[i];
+    return map;
   }
 
   function getSeries(seriesId) {
@@ -386,11 +400,15 @@
     return el;
   }
 
-  function backButton(label) {
+  function backButton(label, target) {
     var b = document.createElement("button");
     b.className = "btn btn-ghost btn-sm focusable back-btn";
     b.innerHTML = "&larr; " + (label || "Back");
-    b.addEventListener("click", function () { App.goBack(); });
+    b.addEventListener("click", function () {
+      if (target) App.navigate(target);
+      else if (String(label || "").toLowerCase() === "home") App.navigate("#home");
+      else App.goBack();
+    });
     return b;
   }
 
@@ -400,35 +418,37 @@
     root.className = "page";
 
     var all = Store.getItems().filter(function (it) { return !isLiveItem(it); });
-    var mv = movies();
+    var mv = all.filter(function (it) { return it.type === "movie"; });
 
     var byId = {};
     all.forEach(function (it) { byId[it.id] = it; });
 
-    var heroItem = mv.find(function (m) { return m.poster; }) || mv[0] || null;
+    var heroPool = mv.filter(function (m) { return m.poster; });
+    if (!heroPool.length) heroPool = mv;
+    var heroItem = heroPool.length ? heroPool[Math.floor(Math.random() * heroPool.length)] : null;
     if (heroItem) {
       root.appendChild(hero(heroItem));
     }
 
-    var continueItems = [];
     var history = Store.getHistory();
-    history.forEach(function (h) {
-      var it = byId[h.id];
-      if (!it) return;
-      var p = progressOf(h.id);
-      if (p && p.progress > 0 && p.progress < 100) continueItems.push(it);
-    });
 
     var recentItems = history
       .map(function (h) { return byId[h.id]; })
       .filter(Boolean)
       .slice(0, 14);
 
+    /* Build the series index once and reuse it everywhere below — the old
+       code re-ran the full series scan for every watched/series entry,
+       which made the home page crawl on large libraries. */
+    var allSeries = seriesList();
+    var sbyId = seriesById(allSeries);
+    var seriesCardMap = {};
+
     var watchlist = [];
     var catStats = categoryStats();
     Store.getWatchlist().forEach(function (id) {
       if (id && id.indexOf("series:") === 0) {
-        var s = getSeries(id.slice(7));
+        var s = sbyId[id.slice(7)];
         if (s) watchlist.push({ seriesRef: s });
       } else if (id && id.indexOf("cat:") === 0) {
         var cname = id.slice(4);
@@ -441,16 +461,12 @@
 
     var recentAdded = all.slice().sort(function (a, b) { return (b.addedAt || 0) - (a.addedAt || 0); }).slice(0, 14);
 
-    var allSeries = seriesList();
-    var seriesCardMap = {};
-
-    appendIf(root, makeRow("Continue Watching", seriesCardFor(continueItems, seriesCardMap)));
-    appendIf(root, makeRow("Recently Watched", seriesCardFor(recentItems, seriesCardMap)));
-    appendIf(root, makeRow("Watchlist", seriesCardFor(watchlist, seriesCardMap)));
+    appendIf(root, makeRow("Recently Watched", seriesCardFor(recentItems, seriesCardMap, sbyId)));
+    appendIf(root, makeRow("Watchlist", seriesCardFor(watchlist, seriesCardMap, sbyId)));
     appendIf(root, makeRow("Movies", mv.slice(0, 24), { link: { label: "View all", href: "#movies" } }));
     appendIf(root, makeRow("Series", seriesCards(allSeries.slice(0, 24)), { link: { label: "View all", href: "#series" } }));
-    appendIf(root, makeRow("Categories", categoryCards(12), { link: { label: "View all", href: "#categories" } }));
-    appendIf(root, makeRow("Recently Added", seriesCardFor(recentAdded, seriesCardMap)));
+    appendIf(root, makeRow("Categories", categoryCards(12, catStats), { link: { label: "View all", href: "#categories" } }));
+    appendIf(root, makeRow("Recently Added", seriesCardFor(recentAdded, seriesCardMap, sbyId)));
 
     if (!root.querySelector("section")) {
       var btn = document.createElement("button");
@@ -474,6 +490,9 @@
     var bg = document.createElement("div");
     bg.className = "hero-bg";
     if (item.poster) bg.style.backgroundImage = "url('" + escapeHtml(item.poster) + "')";
+    bg.style.cursor = "pointer";
+    bg.setAttribute("title", "Open " + item.title);
+    bg.addEventListener("click", function () { App.openItem(item.id); });
     el.appendChild(bg);
     var body = document.createElement("div");
     body.className = "hero-body";
@@ -491,7 +510,7 @@
     var play = document.createElement("button");
     play.className = "btn btn-primary focusable";
     play.textContent = "▶ Play";
-    play.addEventListener("click", function () { App.openItem(item.id); });
+    play.addEventListener("click", function () { App.navigate("#play/" + encodeURIComponent(item.id)); });
     var details = document.createElement("button");
     details.className = "btn btn-ghost focusable";
     details.textContent = "Details";
@@ -508,11 +527,12 @@
 
   function seriesCards(list) {
     return list.map(function (s) {
+      var epCount = s && s.episodes ? s.episodes.length : 0;
       var it = {
         id: s.seriesId,
         title: s.seriesName,
         poster: s.poster,
-        group: s.group + (s.episodes.length ? " · " + s.episodes.length + " episodes" : ""),
+        group: s.group + (epCount ? " · " + epCount + " episodes" : ""),
         type: "series",
         seriesId: s.seriesId
       };
@@ -529,7 +549,7 @@
       t.textContent = s.seriesName;
       var sub = document.createElement("div");
       sub.className = "card-sub";
-      sub.textContent = s.episodes.length + " episodes";
+      sub.textContent = epCount + " episodes";
       body.appendChild(t);
       body.appendChild(sub);
       el.appendChild(body);
@@ -540,9 +560,11 @@
 
   /* Maps a list of items to cards, building a series card on demand for any
      referenced series so huge libraries never create cards for series that
-     are not shown. */
-  function seriesCardFor(items, map) {
+     are not shown. `seriesById` (a precomputed seriesId → series map) avoids
+     rebuilding the whole series index for every referenced series. */
+  function seriesCardFor(items, map, sById) {
     map = map || {};
+    sById = sById || seriesById();
     var seen = {};
     var out = [];
     items.forEach(function (it) {
@@ -559,7 +581,7 @@
         seen[key] = true;
         var e = map[key];
         if (!e) {
-          var s = getSeries(key);
+          var s = sById[key];
           if (s) e = seriesCards([s])[0];
         }
         if (e) { out.push(e); return; }
@@ -568,7 +590,12 @@
         var sid = it.seriesId || "series-" + M3UParser.stableId(it.seriesName || it.title);
         if (seen[sid]) return;
         seen[sid] = true;
-        out.push(map[sid] || seriesCards([it])[0]);
+        var card = map[sid];
+        if (!card) {
+          var full = sById[sid] || it;
+          card = seriesCards([full])[0];
+        }
+        out.push(card);
         return;
       }
       out.push(it);
@@ -659,11 +686,11 @@
     return el;
   }
 
-  function categoryCards(limit) {
-    var stats = categoryStats();
-    var names = Object.keys(stats.counts).sort();
+  function categoryCards(limit, stats) {
+    var st = stats || categoryStats();
+    var names = Object.keys(st.counts).sort();
     if (limit) names = names.slice(0, limit);
-    return names.map(function (name) { return categoryCard(name, false, stats); });
+    return names.map(function (name) { return categoryCard(name, false, st); });
   }
 
   /* ---------- CATEGORIES ---------- */
@@ -901,6 +928,12 @@
         note.textContent = "Showing " + max + " of " + items.length + " — type in the filter to see the rest.";
         listBody.appendChild(note);
       }
+      /* Auto-select the first item so the player pane is never left showing
+         the "Select a channel" placeholder — especially useful on mobile. */
+      if (opts.autoplay && !playingId && shown > 0 && !ql) {
+        var first = listBody.querySelector(".live-item");
+        if (first) { try { first.click(); } catch (e) { /* ignore */ } }
+      }
     }
 
     filter.addEventListener("input", function () { renderList(filter.value); });
@@ -911,18 +944,17 @@
   function renderLive() {
     var root = document.createElement("div");
     root.className = "page live-page";
-    root.appendChild(backButton("Home"));
 
     var header = document.createElement("div");
-    header.className = "section-header";
+    header.className = "section-header page-head";
+    var left = document.createElement("div");
+    left.className = "page-head-left";
+    left.appendChild(backButton("Home"));
     var h = document.createElement("h1");
     h.className = "section-title";
     h.textContent = "Live";
-    header.appendChild(h);
-    var sub = document.createElement("p");
-    sub.className = "section-sub";
-    sub.textContent = "Pick a channel to watch it here. Click the same channel again for fullscreen.";
-    header.appendChild(sub);
+    left.appendChild(h);
+    header.appendChild(left);
     root.appendChild(header);
 
     var items = liveItems();
@@ -933,7 +965,7 @@
       return;
     }
 
-    var sv = splitView(items, { filterPlaceholder: "Filter channels…", placeholder: "▶ Select a channel", showGroup: true });
+    var sv = splitView(items, { filterPlaceholder: "Filter channels…", placeholder: "▶ Select a channel", showGroup: true, autoplay: true });
     root.appendChild(sv.layout);
     sv.render("");
 
@@ -947,16 +979,19 @@
   function renderCategory(name) {
     var root = document.createElement("div");
     root.className = "page live-page";
-    root.appendChild(backButton("Categories"));
 
     var header = document.createElement("div");
-    header.className = "section-header";
+    header.className = "section-header page-head";
+    var left = document.createElement("div");
+    left.className = "page-head-left";
+    left.appendChild(backButton("Categories", "#categories"));
     var h = document.createElement("h1");
     h.className = "section-title";
     h.textContent = name;
-    header.appendChild(h);
+    left.appendChild(h);
+    header.appendChild(left);
     var starBtn = document.createElement("button");
-    starBtn.className = "btn btn-secondary focusable";
+    starBtn.className = "btn btn-secondary focusable page-head-action";
     function paintStar() { starBtn.textContent = Store.isCategoryInWatchlist(name) ? "★ In watchlist" : "☆ Add to watchlist"; }
     paintStar();
     starBtn.addEventListener("click", function () {
@@ -975,7 +1010,7 @@
       return;
     }
 
-    var sv = splitView(items, { filterPlaceholder: "Filter items…", placeholder: "▶ Select an item" });
+    var sv = splitView(items, { filterPlaceholder: "Filter items…", placeholder: "▶ Select an item", autoplay: true });
     root.appendChild(sv.layout);
     sv.render("");
 
@@ -1022,8 +1057,7 @@
     var root = document.createElement("div");
     root.className = "page";
 
-    var back = backButton("Series");
-    back.addEventListener("click", function () { App.navigate("#series"); });
+    var back = backButton("Series", "#series");
     root.appendChild(back);
 
     var backdrop = document.createElement("div");
@@ -1054,6 +1088,11 @@
       poster.appendChild(img);
     } else {
       poster.appendChild(fallbackIcon(poster));
+    }
+    poster.style.cursor = "pointer";
+    poster.setAttribute("title", s.episodes.length ? "Play first episode" : "No episodes yet");
+    if (s.episodes.length) {
+      poster.addEventListener("click", function () { App.navigate("#play/" + encodeURIComponent(s.episodes[0].id)); });
     }
     header.appendChild(poster);
 
@@ -1137,9 +1176,13 @@
     }
 
     function episodeRow(ep) {
-      var row = document.createElement("button");
-      row.className = "episode focusable";
+      var row = document.createElement("div");
+      row.className = "episode";
       row.style.position = "relative";
+
+      var main = document.createElement("button");
+      main.className = "episode-main focusable";
+
       var thumb = document.createElement("div");
       thumb.className = "episode-thumb";
       if (ep.poster) {
@@ -1179,16 +1222,52 @@
         pb.style.width = p.progress + "%";
         row.appendChild(pb);
       }
-      row.appendChild(thumb);
-      row.appendChild(num);
-      row.appendChild(body);
-      row.appendChild(state);
-      row.addEventListener("click", function () { App.navigate("#play/" + encodeURIComponent(ep.id)); });
+      main.appendChild(thumb);
+      main.appendChild(num);
+      main.appendChild(body);
+      main.appendChild(state);
+      main.addEventListener("click", function () { App.navigate("#play/" + encodeURIComponent(ep.id)); });
+      row.appendChild(main);
+
+      var edit = document.createElement("button");
+      edit.className = "btn btn-ghost btn-sm focusable episode-edit";
+      edit.textContent = "Edit";
+      edit.setAttribute("aria-label", "Edit " + (ep.episodeTitle || ep.title));
+      edit.addEventListener("click", function (e) {
+        e.stopPropagation();
+        App.navigate("#edit/" + encodeURIComponent(ep.id));
+      });
+      row.appendChild(edit);
+
       return row;
     }
 
     var danger = document.createElement("div");
     danger.style.marginTop = "26px";
+    danger.style.display = "flex";
+    danger.style.gap = "10px";
+    danger.style.flexWrap = "wrap";
+    var editSeriesBtn = document.createElement("button");
+    editSeriesBtn.className = "btn btn-secondary focusable";
+    editSeriesBtn.textContent = "Edit series";
+    editSeriesBtn.addEventListener("click", function () {
+      var rec = Store.getItems().find(function (x) { return x.type === "series" && x.seriesId === seriesId; });
+      if (!rec) {
+        rec = Store.addItem({
+          title: s.seriesName,
+          type: "series",
+          mediaType: "series",
+          source: "",
+          poster: s.poster || "",
+          description: s.description || "",
+          group: s.group || "",
+          seriesId: seriesId,
+          seriesName: s.seriesName
+        });
+      }
+      App.navigate("#edit/" + encodeURIComponent(rec.id));
+    });
+    danger.appendChild(editSeriesBtn);
     var del = document.createElement("button");
     del.className = "btn btn-danger focusable";
     del.textContent = "Delete entire series";
@@ -1225,8 +1304,7 @@
 
     var root = document.createElement("div");
     root.className = "page";
-    var back = backButton("Movies");
-    back.addEventListener("click", function () { App.navigate("#movies"); });
+    var back = backButton("Movies", "#movies");
     root.appendChild(back);
 
     var backdrop = document.createElement("div");
@@ -1257,6 +1335,9 @@
     } else {
       poster.appendChild(fallbackIcon(poster));
     }
+    poster.style.cursor = "pointer";
+    poster.setAttribute("title", "Play " + item.title);
+    poster.addEventListener("click", function () { App.navigate("#play/" + encodeURIComponent(item.id)); });
     header.appendChild(poster);
 
     var info = document.createElement("div");
@@ -1997,8 +2078,7 @@
   function renderAdd() {
     var root = document.createElement("div");
     root.className = "page";
-    var back = backButton("Library");
-    back.addEventListener("click", function () { App.navigate("#settings"); });
+    var back = backButton("Library", "#settings");
     root.appendChild(back);
     var header = document.createElement("div");
     header.className = "section-header";
@@ -2148,7 +2228,6 @@
     var root = document.createElement("div");
     root.className = "page";
     var back = backButton("Back");
-    back.addEventListener("click", function () { App.goBack(); });
     root.appendChild(back);
     var header = document.createElement("div");
     header.className = "section-header";
@@ -2261,7 +2340,11 @@
       }
       Store.updateItem(item.id, patch);
       toast("Changes saved", "ok");
-      App.goBack();
+      if (type === "series") {
+        App.navigate("#series/" + encodeURIComponent(patch.seriesId || item.seriesId || ""));
+      } else {
+        App.goBack();
+      }
     });
     actions.appendChild(save);
     actions.appendChild(cancel);

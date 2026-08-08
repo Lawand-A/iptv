@@ -30,20 +30,34 @@
   var dbPromise = null;
   var idbFailed = false;
 
+  /* In-memory mirror of every localStorage value, so reading hot data
+     (watched/progress/history on every rendered card) never hits the disk
+     or re-parses JSON. Invalidated on every write. */
+  var memCache = {};
+
   function read(key, fallback) {
+    if (memCache.hasOwnProperty(key)) return memCache[key];
     try {
       var raw = localStorage.getItem(key);
-      if (raw === null || raw === "") return fallback;
-      var value = JSON.parse(raw);
-      return value === undefined || value === null ? fallback : value;
+      var value;
+      if (raw === null || raw === "") {
+        value = fallback;
+      } else {
+        value = JSON.parse(raw);
+        if (value === undefined || value === null) value = fallback;
+      }
+      memCache[key] = value;
+      return value;
     } catch (e) {
       console.warn("Storage corrupt for", key, "- recovering.");
       localStorage.removeItem(key);
+      delete memCache[key];
       return fallback;
     }
   }
 
   function write(key, value) {
+    memCache[key] = value;
     try {
       localStorage.setItem(key, JSON.stringify(value));
       return true;
@@ -51,6 +65,14 @@
       console.warn("Storage write failed for", key, e);
       return false;
     }
+  }
+
+  function memDrop(key) {
+    delete memCache[key];
+  }
+
+  function memClear() {
+    memCache = {};
   }
 
   function uid() {
@@ -184,6 +206,7 @@
     if (small && lsSize <= LS_MIRROR_LIMIT) {
       write(KEYS.items, snapshot);
     } else {
+      memDrop(KEYS.items);
       try { localStorage.removeItem(KEYS.items); } catch (e) { /* ignore */ }
     }
 
@@ -421,6 +444,7 @@
   }
 
   function resetAll() {
+    memClear();
     Object.keys(KEYS).forEach(function (k) { try { localStorage.removeItem(KEYS[k]); } catch (e) { /* ignore */ } });
     itemsCache = [];
     getDB().then(function (db) { return idbDelete(db, ITEM_DB_KEY); }).catch(function () { /* ignore */ });
@@ -447,8 +471,9 @@
           if (data.length <= 20000) {
             var s = JSON.stringify(data);
             if (s.length <= LS_MIRROR_LIMIT) write(KEYS.items, data);
-            else { try { localStorage.removeItem(KEYS.items); } catch (e) { /* ignore */ } }
+            else { memDrop(KEYS.items); try { localStorage.removeItem(KEYS.items); } catch (e) { /* ignore */ } }
           } else {
+            memDrop(KEYS.items);
             try { localStorage.removeItem(KEYS.items); } catch (e) { /* ignore */ }
           }
         } else {
