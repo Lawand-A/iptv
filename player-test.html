@@ -8,7 +8,7 @@
   <button class="brand focusable">STREAMHUB</button>
   <nav class="topnav" id="topnav">
     <button class="nav-link focusable" data-action="home">Home</button>
-    <button class="nav-link focusable" data-action="settings">Library</button>
+    <button class="nav-link focusable" data-action="settings">Settings</button>
   </nav>
 </div></header>
 <div class="mobile-menu" id="mobileMenu" hidden></div>
@@ -36,8 +36,8 @@
       var rect = video ? video.getBoundingClientRect() : null;
       window.__mk.push("video size: " + (rect ? Math.round(rect.width) + "x" + Math.round(rect.height) : "none"));
       var wrap = document.querySelector(".player-wrap");
-      var wrect = wrap ? wrap.getBoundingClientRect() : null;
-      window.__mk.push("wrap size: " + (wrect ? Math.round(wrect.width) + "x" + Math.round(wrect.height) : "none"));
+      window.__mk.push("bar-vol: " + !!document.querySelector(".bar-vol"));
+      window.__mk.push("bar-volume: " + !!document.querySelector(".bar-volume"));
       video.addEventListener("loadedmetadata", function () { window.__mk.push("metadata loaded, readyState=" + video.readyState + ", duration=" + video.duration); });
       video.addEventListener("error", function () { window.__mk.push("VIDEO ERROR: " + (video.error ? video.error.code + "/" + video.error.message : "none")); });
       video.addEventListener("playing", function () { window.__mk.push("PLAYING"); });
