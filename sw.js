@@ -5,9 +5,8 @@
    never cached — they must always hit the network. */
 "use strict";
 
-var VERSION = "streamhub-v1";
+var VERSION = "streamhub-v2";
 var SHELL = [
-  "./",
   "./index.html",
   "./manifest.json",
   "./css/style.css",
@@ -32,8 +31,13 @@ function isStreamOrApi(url) {
 
 self.addEventListener("install", function (e) {
   e.waitUntil(
-    caches.open(VERSION).then(function (cache) { return cache.addAll(SHELL); })
-      .then(function () { return self.skipWaiting(); })
+    caches.open(VERSION).then(function (cache) {
+      /* Cache each file individually so one failure doesn't break the
+         entire SW install (which would prevent beforeinstallprompt). */
+      return Promise.all(SHELL.map(function (url) {
+        return cache.add(url).catch(function () { /* skip failed file */ });
+      }));
+    }).then(function () { return self.skipWaiting(); })
   );
 });
 
