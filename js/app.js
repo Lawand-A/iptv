@@ -174,9 +174,7 @@
         } else if (action === "reset") {
           UI.confirmModal("Reset everything?", "This wipes all application data. There is no undo.", function () {
             Store.resetAll();
-            location.hash = "#home";
-            render();
-            UI.toast("Application reset", "ok");
+            location.reload();
           });
         } else if (action === "delete-refresh") {
           UI.confirmModal("Delete and re-import?", "All current items will be removed, then re-imported from your saved sources. History, progress and watchlist are kept.", function () {
