@@ -821,11 +821,18 @@ textarea { resize: vertical; min-height: 80px; }
 .player-epnav-wrap {
   display: flex;
   gap: 10px;
-  margin-top: 14px;
 }
 .player-epnav-wrap .bar-final {
   opacity: 0.5;
   pointer-events: none;
+}
+.player-under-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 14px;
+  flex-wrap: wrap;
 }
 .bar-vol:hover,
 .bar-vol:focus-visible {
