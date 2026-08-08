@@ -20,6 +20,8 @@
   var DB_NAME = "iptv-app";
   var DB_STORE = "library";
   var ITEM_DB_KEY = "items";
+  var INDEX_DB_KEY = "indexes";
+  var INDEX_VERSION = 1;
   var LS_MIRROR_LIMIT = 2500000; // chars; mirror to localStorage only when small
 
   var store = {};
@@ -29,6 +31,133 @@
   var persistErrorHandler = null;
   var dbPromise = null;
   var idbFailed = false;
+
+  /* ---------- Lazy indexes for fast navigation on huge libraries ----------
+     These indexes are invalidated on every write and rebuilt on demand.
+     They store references to the same item objects, so memory overhead is
+     small and all existing code keeps working unchanged. */
+  var idxDirty = true;
+  var idxById = {};
+  var idxByType = { movie: [], episode: [], series: [] };
+  var idxMovies = [];      /* non-live movies */
+  var idxLive = [];        /* live channels (type movie, live:true) */
+  var idxEpisodes = [];    /* type episode */
+  var idxByGroup = {};     /* group name -> items (non-episode) */
+  var idxCategoryPosters = {};
+  var idxSeries = {};      /* seriesId -> series record */
+  var idxSeriesList = [];  /* cached seriesList result */
+  var idxRecentAdded = []; /* items sorted by addedAt desc */
+
+  function isLiveSource(source) {
+    var s = String(source == null ? "" : source).trim();
+    if (!s || s.indexOf("<") === 0) return false;
+    var lc = s.toLowerCase();
+    /* Explicit VOD/series paths mean the stream is on-demand even when it is
+       served as HLS (.m3u8) — Xtream /movie/ and /series/ endpoints do that. */
+    if (/\/movie\//.test(lc) || /\/series\//.test(lc)) return false;
+    if (/\.m3u8(?:\?|#|$)/.test(lc)) return true;
+    if (/\/live\//.test(lc)) return true;
+    if (/\/hls\//.test(lc)) return true;
+    if (/\/(?:live|hls)\./.test(lc)) return true;
+    if (/^(?:rtmp|rtmps|rtsp|udp|srt|mms):\/\//.test(lc)) return true;
+    return false;
+  }
+
+  function itemIsLive(it) {
+    if (typeof it.live === "boolean") return it.live;
+    /* Items without an explicit live flag: use the source heuristic, but also
+       respect the mediaType — embed sources are never live channels. */
+    if (it.mediaType === "embed") return false;
+    return isLiveSource(it.source);
+  }
+
+  function buildSeriesRecord(seriesId, seriesName) {
+    return {
+      seriesId: seriesId,
+      seriesName: seriesName,
+      poster: "",
+      description: "",
+      group: "",
+      episodes: []
+    };
+  }
+
+  function rebuildIndexes() {
+    if (!idxDirty) return;
+    idxDirty = false;
+
+    var items = itemsCache || [];
+    idxById = {};
+    idxByType = { movie: [], episode: [], series: [] };
+    idxMovies = [];
+    idxLive = [];
+    idxEpisodes = [];
+    idxByGroup = {};
+    idxCategoryPosters = {};
+    idxSeries = {};
+
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (!it || !it.id) continue;
+      idxById[it.id] = it;
+
+      var type = it.type;
+      if (type !== "movie" && type !== "episode" && type !== "series") type = "movie";
+      idxByType[type].push(it);
+
+      if (type === "episode") {
+        idxEpisodes.push(it);
+        var skey = it.seriesId || "series-" + String(it.seriesName || it.title || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+        var rec = idxSeries[skey] || buildSeriesRecord(skey, it.seriesName || it.title);
+        rec.episodes.push(it);
+        if (it.poster && !rec.poster) rec.poster = it.poster;
+        if (it.description && !rec.description) rec.description = it.description;
+        if (it.group && !rec.group) rec.group = it.group;
+        idxSeries[skey] = rec;
+      } else if (type === "series") {
+        var rec2 = idxSeries[it.seriesId] || buildSeriesRecord(it.seriesId, it.seriesName || it.title);
+        rec2.poster = it.poster || rec2.poster;
+        rec2.description = it.description || rec2.description;
+        rec2.group = it.group || rec2.group;
+        idxSeries[it.seriesId] = rec2;
+      } else {
+        /* movie */
+        if (itemIsLive(it)) {
+          idxLive.push(it);
+        } else {
+          idxMovies.push(it);
+        }
+        var gname = it.group || "Uncategorized";
+        if (!idxByGroup[gname]) idxByGroup[gname] = [];
+        idxByGroup[gname].push(it);
+        if (it.poster && !idxCategoryPosters[gname]) idxCategoryPosters[gname] = it.poster;
+      }
+    }
+
+    /* Sort episodes inside each series and build the series list. */
+    idxSeriesList = [];
+    for (var sid in idxSeries) {
+      if (!idxSeries.hasOwnProperty(sid)) continue;
+      var s = idxSeries[sid];
+      s.episodes.sort(function (a, b) {
+        return (a.season - b.season) || (a.episodeNumber - b.episodeNumber);
+      });
+      idxSeriesList.push(s);
+    }
+    idxSeriesList.sort(function (a, b) { return a.seriesName.localeCompare(b.seriesName); });
+
+    /* Pre-sort all items by addedAt desc for instant "recently added" rows. */
+    idxRecentAdded = items.slice().sort(function (a, b) { return (b.addedAt || 0) - (a.addedAt || 0); });
+  }
+
+  function markIndexesDirty() {
+    idxDirty = true;
+  }
+
+  function getIndexedById() {
+    rebuildIndexes();
+    return idxById;
+  }
 
   /* In-memory mirror of every localStorage value, so reading hot data
      (watched/progress/history on every rendered card) never hits the disk
@@ -180,17 +309,23 @@
 
   /* ---------- Item library ---------- */
   function getItems() {
-    if (itemsCache) return itemsCache;
+    if (itemsCache) {
+      rebuildIndexes();
+      return itemsCache;
+    }
     var legacy = read(KEYS.items, []);
     if (!Array.isArray(legacy)) legacy = [];
     var rep = repairItems(legacy.filter(isValidItem));
     itemsCache = rep.items;
+    markIndexesDirty();
     if (rep.changed) schedulePersist();
+    rebuildIndexes();
     return itemsCache;
   }
 
   function saveItems(list) {
     itemsCache = Array.isArray(list) ? list.filter(isValidItem) : [];
+    markIndexesDirty();
     schedulePersist();
     return true;
   }
@@ -211,13 +346,122 @@
     }
 
     getDB().then(function (db) {
-      return idbPut(db, ITEM_DB_KEY, snapshot);
+      var tx = db.transaction(DB_STORE, "readwrite");
+      tx.objectStore(DB_STORE).put(snapshot, ITEM_DB_KEY);
+      tx.objectStore(DB_STORE).put(serializeIndexes(), INDEX_DB_KEY);
+      return new Promise(function (resolve, reject) {
+        tx.oncomplete = function () { resolve(); };
+        tx.onerror = function () { reject(tx.error || new Error("idb-put")); };
+      });
     }).catch(function () {
       if (small && lsSize <= LS_MIRROR_LIMIT) return; // localStorage mirror is enough
       if (persistErrorHandler) {
         persistErrorHandler("Library is too large for localStorage and IndexedDB is unavailable — items will be lost after reload. Use a Chromium-based browser for full large-library support.");
       }
     });
+  }
+
+  function serializeIndexes() {
+    rebuildIndexes();
+    var series = [];
+    for (var i = 0; i < idxSeriesList.length; i++) {
+      var s = idxSeriesList[i];
+      var epIds = [];
+      for (var j = 0; j < s.episodes.length; j++) epIds.push(s.episodes[j].id);
+      series.push([s.seriesId, s.seriesName, s.poster, s.description, s.group, epIds]);
+    }
+    var groups = {};
+    for (var g in idxByGroup) {
+      if (!idxByGroup.hasOwnProperty(g)) continue;
+      var arr = idxByGroup[g];
+      var ids = [];
+      for (var k = 0; k < arr.length; k++) ids.push(arr[k].id);
+      groups[g] = ids;
+    }
+    var recentIds = [];
+    for (var r = 0; r < idxRecentAdded.length; r++) recentIds.push(idxRecentAdded[r].id);
+    return {
+      v: INDEX_VERSION,
+      count: itemsCache.length,
+      series: series,
+      groups: groups,
+      posters: idxCategoryPosters,
+      recentAdded: recentIds
+    };
+  }
+
+  function rehydrateIndexes(data, items) {
+    if (!data || data.v !== INDEX_VERSION || data.count !== items.length) return false;
+    try {
+      idxById = {};
+      idxByType = { movie: [], episode: [], series: [] };
+      idxMovies = [];
+      idxLive = [];
+      idxEpisodes = [];
+      idxByGroup = {};
+      idxCategoryPosters = data.posters ? Object.assign({}, data.posters) : {};
+      idxSeries = {};
+      idxSeriesList = [];
+      idxRecentAdded = [];
+
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        if (!it || !it.id) continue;
+        idxById[it.id] = it;
+        var type = it.type;
+        if (type !== "movie" && type !== "episode" && type !== "series") type = "movie";
+        idxByType[type].push(it);
+        if (type === "episode") idxEpisodes.push(it);
+        else if (type === "movie") {
+          if (itemIsLive(it)) idxLive.push(it); else idxMovies.push(it);
+        }
+      }
+
+      /* Rebuild groups from persisted ids. */
+      for (var g in data.groups) {
+        if (!data.groups.hasOwnProperty(g)) continue;
+        var ids = data.groups[g];
+        var list = [];
+        for (var j = 0; j < ids.length; j++) {
+          var item = idxById[ids[j]];
+          if (item) list.push(item);
+        }
+        idxByGroup[g] = list;
+      }
+
+      /* Rebuild series from persisted data. */
+      var persistedSeries = data.series;
+      for (var s = 0; s < persistedSeries.length; s++) {
+        var rec = persistedSeries[s];
+        var epIds = rec[5] || [];
+        var episodes = [];
+        for (var e = 0; e < epIds.length; e++) {
+          var ep = idxById[epIds[e]];
+          if (ep) episodes.push(ep);
+        }
+        idxSeries[rec[0]] = {
+          seriesId: rec[0],
+          seriesName: rec[1],
+          poster: rec[2],
+          description: rec[3],
+          group: rec[4],
+          episodes: episodes
+        };
+        idxSeriesList.push(idxSeries[rec[0]]);
+      }
+
+      /* Recent added order. */
+      var recentIds = data.recentAdded || [];
+      for (var r = 0; r < recentIds.length; r++) {
+        var ri = idxById[recentIds[r]];
+        if (ri) idxRecentAdded.push(ri);
+      }
+
+      idxDirty = false;
+      return true;
+    } catch (e) {
+      return false;
+    }
   }
 
   function schedulePersist() {
@@ -236,7 +480,8 @@
   }
 
   function getItem(id) {
-    return getItems().find(function (it) { return it.id === id; }) || null;
+    rebuildIndexes();
+    return idxById[id] || null;
   }
 
   function addItem(data) {
@@ -261,6 +506,7 @@
     var items = getItems();
     var idx = items.findIndex(function (it) { return it.id === item.id; });
     if (idx >= 0) items[idx] = item; else items.push(item);
+    markIndexesDirty();
     schedulePersist();
     return item;
   }
@@ -270,6 +516,7 @@
     var idx = items.findIndex(function (it) { return it.id === id; });
     if (idx < 0) return null;
     items[idx] = Object.assign({}, items[idx], patch, { id: id });
+    markIndexesDirty();
     schedulePersist();
     return items[idx];
   }
@@ -277,6 +524,7 @@
   function removeItem(id) {
     var items = getItems().filter(function (it) { return it.id !== id; });
     itemsCache = items;
+    markIndexesDirty();
     schedulePersist();
     clearItemReferences(id);
   }
@@ -447,6 +695,7 @@
   /* ---------- Library wide ops ---------- */
   function clearLibrary() {
     itemsCache = [];
+    markIndexesDirty();
     schedulePersist();
     write(KEYS.watchlist, []);
     write(KEYS.history, []);
@@ -458,7 +707,15 @@
     memClear();
     Object.keys(KEYS).forEach(function (k) { try { localStorage.removeItem(KEYS[k]); } catch (e) { /* ignore */ } });
     itemsCache = [];
-    getDB().then(function (db) { return idbDelete(db, ITEM_DB_KEY); }).catch(function () { /* ignore */ });
+    getDB().then(function (db) {
+      var tx = db.transaction(DB_STORE, "readwrite");
+      tx.objectStore(DB_STORE).delete(ITEM_DB_KEY);
+      tx.objectStore(DB_STORE).delete(INDEX_DB_KEY);
+      return new Promise(function (resolve, reject) {
+        tx.oncomplete = function () { resolve(); };
+        tx.onerror = function () { reject(tx.error); };
+      });
+    }).catch(function () { /* ignore */ });
   }
 
   /* ---------- Boot ---------- */
@@ -467,6 +724,7 @@
       function finishFrom(data) {
         var rep = repairItems(Array.isArray(data) ? data.filter(isValidItem) : []);
         itemsCache = rep.items;
+        markIndexesDirty();
         if (rep.changed) schedulePersist();
         resolve();
       }
@@ -474,26 +732,95 @@
         finishFrom(read(KEYS.items, []));
       }
       getDB().then(function (db) {
-        return idbGet(db, ITEM_DB_KEY);
-      }).then(function (data) {
-        if (data) {
-          finishFrom(data);
-          // keep a small localStorage mirror for older versions / fallback
-          if (data.length <= 20000) {
-            var s = JSON.stringify(data);
-            if (s.length <= LS_MIRROR_LIMIT) write(KEYS.items, data);
-            else { memDrop(KEYS.items); try { localStorage.removeItem(KEYS.items); } catch (e) { /* ignore */ } }
+        var tx = db.transaction(DB_STORE, "readonly");
+        var store = tx.objectStore(DB_STORE);
+        var itemsReq = store.get(ITEM_DB_KEY);
+        var idxReq = store.get(INDEX_DB_KEY);
+        var items = null;
+        var indexes = null;
+        var doneCount = 0;
+        function checkDone() {
+          if (++doneCount < 2) return;
+          if (items) {
+            finishFrom(items);
+            if (indexes && rehydrateIndexes(indexes, itemsCache)) {
+              /* indexes restored; nothing else to do */
+            } else {
+              rebuildIndexes();
+            }
+            // keep a small localStorage mirror for older versions / fallback
+            if (itemsCache.length <= 20000) {
+              var s = JSON.stringify(itemsCache);
+              if (s.length <= LS_MIRROR_LIMIT) write(KEYS.items, itemsCache);
+              else { memDrop(KEYS.items); try { localStorage.removeItem(KEYS.items); } catch (e) { /* ignore */ } }
+            } else {
+              memDrop(KEYS.items);
+              try { localStorage.removeItem(KEYS.items); } catch (e) { /* ignore */ }
+            }
           } else {
-            memDrop(KEYS.items);
-            try { localStorage.removeItem(KEYS.items); } catch (e) { /* ignore */ }
+            fromLegacy();
           }
-        } else {
-          fromLegacy();
         }
+        itemsReq.onsuccess = function () { items = itemsReq.result; checkDone(); };
+        itemsReq.onerror = function () { items = null; checkDone(); };
+        idxReq.onsuccess = function () { indexes = idxReq.result; checkDone(); };
+        idxReq.onerror = function () { indexes = null; checkDone(); };
       }).catch(function () {
         fromLegacy();
       });
     });
+  }
+
+  /* Fast getters used by the UI for large libraries. These rebuild the lazy
+     indexes on first use after any write. */
+  function getMovieItems() {
+    rebuildIndexes();
+    return idxMovies.slice();
+  }
+  function getLiveItems() {
+    rebuildIndexes();
+    return idxLive.slice();
+  }
+  function getEpisodeItems() {
+    rebuildIndexes();
+    return idxEpisodes.slice();
+  }
+  function getSeriesList() {
+    rebuildIndexes();
+    return idxSeriesList.slice();
+  }
+  function getSeries(seriesId) {
+    rebuildIndexes();
+    var s = idxSeries[seriesId];
+    return s ? {
+      seriesId: s.seriesId,
+      seriesName: s.seriesName,
+      poster: s.poster,
+      description: s.description,
+      group: s.group,
+      episodes: s.episodes.slice()
+    } : null;
+  }
+  function getItemsByGroup(name) {
+    rebuildIndexes();
+    var list = idxByGroup[name] || [];
+    return list.slice();
+  }
+  function getCategoryStats() {
+    rebuildIndexes();
+    var counts = {};
+    for (var g in idxByGroup) {
+      if (idxByGroup.hasOwnProperty(g)) counts[g] = idxByGroup[g].length;
+    }
+    return { counts: counts, posters: Object.assign({}, idxCategoryPosters) };
+  }
+  function getRecentAdded(count) {
+    rebuildIndexes();
+    return idxRecentAdded.slice(0, count);
+  }
+  function getNonLiveItems() {
+    rebuildIndexes();
+    return idxMovies.concat(idxEpisodes).concat(idxByType.series);
   }
 
   var readyPromise = null;
@@ -514,6 +841,15 @@
     addItem: addItem,
     updateItem: updateItem,
     removeItem: removeItem,
+    getMovieItems: getMovieItems,
+    getLiveItems: getLiveItems,
+    getEpisodeItems: getEpisodeItems,
+    getNonLiveItems: getNonLiveItems,
+    getRecentAdded: getRecentAdded,
+    getSeriesList: getSeriesList,
+    getSeries: getSeries,
+    getItemsByGroup: getItemsByGroup,
+    getCategoryStats: getCategoryStats,
     getWatchlist: getWatchlist,
     isInWatchlist: isInWatchlist,
     toggleWatchlist: toggleWatchlist,

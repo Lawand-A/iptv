@@ -3,7 +3,7 @@
 (function (global) {
   "use strict";
 
-  var WATCHED_SECONDS = 60;
+  var WATCHED_THRESHOLD = 0.85; /* 85% of duration marks a direct video as watched */
   var SAVE_INTERVAL_MS = 5000;
   var watchedTimer = null;
   var saveTimer = null;
@@ -31,15 +31,35 @@
     stopWatchedTimer();
     if (!item || item.live) return;
     if (Store.isWatched(item.id)) return;
-    watchedTimer = setTimeout(function () {
+    /* Embed sources can't report progress, so mark as watched on open. */
+    if (item.mediaType === "embed") {
       Store.markWatched(item.id);
-      notify("Marked as watched");
       if (global.UI) UI.refreshBadges && UI.refreshBadges();
-    }, WATCHED_SECONDS * 1000);
+      return;
+    }
+    /* Direct videos: mark as watched when playback reaches 85%. */
+    if (video) {
+      video.addEventListener("timeupdate", onWatchedProgress);
+    }
+  }
+
+  function onWatchedProgress() {
+    if (!video || currentId == null || currentLive) return;
+    var d = video.duration;
+    if (!d || !isFinite(d) || d <= 0) return;
+    if (video.currentTime / d >= WATCHED_THRESHOLD) {
+      if (!Store.isWatched(currentId)) {
+        Store.markWatched(currentId);
+        notify("Marked as watched");
+        if (global.UI) UI.refreshBadges && UI.refreshBadges();
+      }
+      stopWatchedTimer();
+    }
   }
 
   function stopWatchedTimer() {
     if (watchedTimer) { clearTimeout(watchedTimer); watchedTimer = null; }
+    if (video) video.removeEventListener("timeupdate", onWatchedProgress);
   }
 
   function savePosition() {
@@ -300,9 +320,11 @@
     }
     var hls = new Hls({
       lowLatencyMode: false,
-      liveSyncDurationCount: 8,
+      liveSyncDurationCount: 3,
+      liveMaxLatencyDurationCount: 5,
       maxBufferLength: 60,
       backBufferLength: 60,
+      startLevel: -1,
       manifestLoadingMaxRetry: 4,
       levelLoadingMaxRetry: 4,
       fragLoadingMaxRetry: 8,
@@ -475,6 +497,33 @@
     if (p && p.catch) p.catch(function () { showTapHint(video); });
   }
 
+  function createLoader() {
+    var loader = document.createElement("div");
+    loader.className = "player-loader";
+    return {
+      el: loader,
+      show: function () { loader.classList.add("show"); },
+      hide: function () { loader.classList.remove("show"); }
+    };
+  }
+
+  function attachLoader(video, loader) {
+    function show() { loader.show(); }
+    function hide() { loader.hide(); }
+    video.addEventListener("loadstart", show);
+    video.addEventListener("waiting", show);
+    video.addEventListener("seeking", show);
+    video.addEventListener("stalled", show);
+    video.addEventListener("playing", hide);
+    video.addEventListener("canplay", hide);
+    video.addEventListener("seeked", hide);
+    video.addEventListener("pause", hide);
+    video.addEventListener("ended", hide);
+    video.addEventListener("error", hide);
+    /* Start visible until we know the video is ready. */
+    loader.show();
+  }
+
   /* Custom bottom control bar (play/pause, ±10s seek, time, fullscreen).
      Replaces the native <video> controls so the seek overlay also works in
      fullscreen (native fullscreen only renders the bare <video> element).
@@ -564,6 +613,12 @@
     seekWrap = wrap;
     seekControls = bar;
 
+    /* Episode navigation: only shown when the current item is a series episode. */
+    var currentItem = currentId != null ? Store.getItem(currentId) : null;
+    var episodeNav = currentItem && currentItem.type === "episode" && currentItem.seriesId
+      ? makeEpisodeNavButtons(currentItem, true)
+      : null;
+
     var progress = document.createElement("input");
     progress.type = "range";
     progress.min = "0";
@@ -594,7 +649,10 @@
     timeEl.textContent = "0:00 / 0:00";
 
     /* Volume button + slider */
-    var lastVolume = video.volume || 1;
+    var savedVol = 1;
+    var savedMuted = false;
+    try { var s = Store.getSettings(); savedVol = typeof s.volume === "number" ? s.volume : 1; savedMuted = !!s.muted; } catch (e) { /* ignore */ }
+    var lastVolume = (savedVol > 0 ? savedVol : 1);
     var volBtn = makeBarButton("bar-btn bar-vol", "Mute", volumeIcon(video.volume, video.muted));
     var volSlider = document.createElement("input");
     volSlider.type = "range";
@@ -604,6 +662,10 @@
     volSlider.value = String(video.muted ? 0 : video.volume);
     volSlider.className = "bar-volume focusable";
     volSlider.setAttribute("aria-label", "Volume");
+
+    function persistVolume() {
+      try { Store.saveSettings({ volume: video.volume, muted: video.muted }); } catch (e) { /* ignore */ }
+    }
 
     function updateVolIcon() {
       volBtn.innerHTML = volumeIcon(video.volume, video.muted);
@@ -640,6 +702,7 @@
     video.addEventListener("volumechange", function () {
       volSlider.value = String(video.muted ? 0 : video.volume);
       updateVolIcon();
+      persistVolume();
     });
 
     var fsBtn = makeBarButton("bar-btn bar-fs", "Toggle fullscreen", fsIcon());
@@ -650,6 +713,7 @@
     row.appendChild(backBtn);
     row.appendChild(fwdBtn);
     row.appendChild(timeEl);
+    if (episodeNav) row.appendChild(episodeNav);
 
     var spacer = document.createElement("span");
     spacer.className = "bar-spacer";
@@ -709,6 +773,31 @@
   }
 
 
+  function blockNativeControls(el) {
+    /* Hide the device's default media notification / remote overlay and keep
+       our custom control bar as the only UI. Works in Chrome/Edge/Smart-TV
+       browsers that support the Media Session API and WebKit controls. */
+    try {
+      el.controls = false;
+      if (el.disableRemotePlayback !== undefined) el.disableRemotePlayback = true;
+      if (navigator.mediaSession) {
+        navigator.mediaSession.metadata = null;
+        navigator.mediaSession.setActionHandler("play", function () { togglePlay(el); });
+        navigator.mediaSession.setActionHandler("pause", function () { togglePlay(el); });
+        navigator.mediaSession.setActionHandler("stop", function () { cancel(); });
+        navigator.mediaSession.setActionHandler("seekbackward", function () { seekBy(el, -10); });
+        navigator.mediaSession.setActionHandler("seekforward", function () { seekBy(el, 10); });
+        navigator.mediaSession.setActionHandler("seekto", function (details) {
+          if (details.seekTime && isFinite(el.duration)) el.currentTime = details.seekTime;
+        });
+        try {
+          navigator.mediaSession.setActionHandler("previoustrack", function () { seekBy(el, -10); });
+          navigator.mediaSession.setActionHandler("nexttrack", function () { seekBy(el, 10); });
+        } catch (e) { /* older implementations may not support these */ }
+      }
+    } catch (e) { /* ignore */ }
+  }
+
   function seekBy(video, delta) {
     if (!video) return;
     var dur = isFinite(video.duration) ? video.duration : Infinity;
@@ -720,11 +809,82 @@
     } catch (e) { /* ignore */ }
   }
 
+  function buildEpisodeNav(item) {
+    var series = Store.getSeries(item.seriesId);
+    if (!series || !series.episodes || series.episodes.length <= 1) return null;
+    var eps = series.episodes;
+    var idx = -1;
+    for (var i = 0; i < eps.length; i++) {
+      if (eps[i].id === item.id) { idx = i; break; }
+    }
+    if (idx < 0) return null;
+    var out = {};
+    if (idx > 0) {
+      out.prevId = eps[idx - 1].id;
+    }
+    if (idx < eps.length - 1) {
+      out.nextId = eps[idx + 1].id;
+    } else {
+      out.isFinal = true;
+    }
+    return out;
+  }
+
+  function goToEpisode(id) {
+    App.navigate("#play/" + encodeURIComponent(id));
+  }
+
+  function makeEpisodeNavButtons(item, forBar) {
+    var state = buildEpisodeNav(item);
+    if (!state) return null;
+    var container = document.createElement("span");
+    container.className = forBar ? "bar-epnav-wrap" : "player-epnav-wrap";
+    if (state.prevId) {
+      var prevBtn = makeBarButton(forBar ? "bar-btn bar-epnav bar-prev" : "btn btn-secondary btn-sm bar-prev", "Previous episode", "‹ Prev");
+      (function (id) {
+        prevBtn.addEventListener("click", function () { goToEpisode(id); if (seekPoke) seekPoke(); });
+      })(state.prevId);
+      container.appendChild(prevBtn);
+    }
+    if (state.nextId) {
+      var nextBtn = makeBarButton(forBar ? "bar-btn bar-epnav bar-next" : "btn btn-secondary btn-sm bar-next", "Next episode", "Next ›");
+      (function (id) {
+        nextBtn.addEventListener("click", function () { goToEpisode(id); if (seekPoke) seekPoke(); });
+      })(state.nextId);
+      container.appendChild(nextBtn);
+    } else if (state.isFinal) {
+      var finalBtn = makeBarButton(forBar ? "bar-btn bar-epnav bar-final" : "btn btn-secondary btn-sm bar-final", "Final episode", "Final Episode");
+      finalBtn.disabled = true;
+      finalBtn.classList.add("bar-final");
+      container.appendChild(finalBtn);
+    }
+    return container;
+  }
+
   function buildDirect(item, saved) {
     var el = document.createElement("video");
     el.autoplay = true;
     el.playsInline = true;
+    el.setAttribute("webkit-playsinline", "true");
+    el.setAttribute("x5-playsinline", "true");
+    el.setAttribute("x5-video-player-type", "h5");
+    el.setAttribute("x5-video-player-fullscreen", "false");
+    el.controls = false;
+    el.setAttribute("controlsList", "nodownload noremoteplayback nofullscreen");
+    el.disableRemotePlayback = true;
+    el.setAttribute("disableRemotePlayback", "true");
+    el.disablePictureInPicture = true;
+    el.setAttribute("disablePictureInPicture", "true");
+    el.preload = "metadata";
+    el.setAttribute("fetchpriority", "high");
     el.className = "player-video";
+
+    /* Restore saved volume so it persists across plays and reloads. */
+    try {
+      var s = Store.getSettings();
+      if (typeof s.volume === "number" && s.volume >= 0 && s.volume <= 1) el.volume = s.volume;
+      if (typeof s.muted === "boolean") el.muted = s.muted;
+    } catch (e) { /* ignore */ }
 
     /* Candidate URLs (Xtream live channels carry alternates). The player
        walks through them until one plays, then shows a clear error. */
@@ -865,6 +1025,7 @@
     });
 
     loadCandidate();
+    blockNativeControls(el);
 
     return el;
   }
@@ -1001,15 +1162,23 @@
 
     var wrap = document.createElement("div");
     wrap.className = "player-wrap";
+    var loader = createLoader();
+    wrap.appendChild(loader.el);
+
     if (item.mediaType === "embed") {
       var embed = buildEmbed(item);
       wrap.appendChild(embed);
     } else {
       video = buildDirect(item, saved);
+      attachLoader(video, loader);
       wrap.appendChild(video);
       wrap.appendChild(buildControlBar(wrap, video));
       startSaveTimer();
     }
+
+    /* Episode navigation strip under the player: visible for all episodes,
+       including embed sources which don't have the custom control bar. */
+    var epNavStrip = item.type === "episode" && item.seriesId ? makeEpisodeNavButtons(item, false) : null;
 
     var note = document.createElement("div");
     note.className = "player-msg player-note";
@@ -1046,6 +1215,7 @@
     root.appendChild(head);
     root.appendChild(wrap);
     root.appendChild(note);
+    if (epNavStrip) root.appendChild(epNavStrip);
     root.appendChild(info);
 
     page.innerHTML = "";
@@ -1090,10 +1260,13 @@
     container.innerHTML = "";
     var wrap = document.createElement("div");
     wrap.className = "player-wrap live-wrap";
+    var loader = createLoader();
+    wrap.appendChild(loader.el);
     if (item.mediaType === "embed") {
       wrap.appendChild(buildEmbed(item));
     } else {
       video = buildDirect(item, saved);
+      attachLoader(video, loader);
       wrap.appendChild(video);
       wrap.appendChild(buildControlBar(wrap, video));
       startSaveTimer();

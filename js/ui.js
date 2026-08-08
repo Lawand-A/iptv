@@ -90,63 +90,19 @@
   }
 
   function liveItems() {
-    return Store.getItems().filter(function (it) {
-      return it.type !== "episode" && it.type !== "series" && isLiveItem(it);
-    });
+    return Store.getLiveItems();
   }
 
   function movies() {
-    return Store.getItems().filter(function (it) { return it.type === "movie" && !isLiveItem(it); });
+    return Store.getMovieItems();
   }
 
   function episodes() {
-    return Store.getItems().filter(function (it) { return it.type === "episode"; });
+    return Store.getEpisodeItems();
   }
 
   function seriesList() {
-    var bySeries = {};
-    var all = Store.getItems();
-    for (var i = 0; i < all.length; i++) {
-      var it = all[i];
-      if (it.type === "series") {
-        bySeries[it.seriesId] = {
-          seriesId: it.seriesId,
-          seriesName: it.seriesName || it.title,
-          poster: it.poster || "",
-          description: it.description || "",
-          group: it.group || "",
-          episodes: []
-        };
-      }
-    }
-    for (var j = 0; j < all.length; j++) {
-      var ep = all[j];
-      if (ep.type !== "episode") continue;
-      var key = ep.seriesId || "series-" + M3UParser.stableId(ep.seriesName || ep.title);
-      if (!bySeries[key]) {
-        bySeries[key] = {
-          seriesId: key,
-          seriesName: ep.seriesName || ep.title,
-          poster: "",
-          description: "",
-          group: "",
-          episodes: []
-        };
-      }
-      var s = bySeries[key];
-      s.episodes.push(ep);
-      if (ep.poster && !s.poster) s.poster = ep.poster;
-      if (ep.description && !s.description) s.description = ep.description;
-      if (ep.group && !s.group) s.group = ep.group;
-    }
-    var list = Object.keys(bySeries).map(function (k) { return bySeries[k]; });
-    list.forEach(function (s) {
-      s.episodes.sort(function (a, b) {
-        return (a.season - b.season) || (a.episodeNumber - b.episodeNumber);
-      });
-    });
-    list.sort(function (a, b) { return a.seriesName.localeCompare(b.seriesName); });
-    return list;
+    return Store.getSeriesList();
   }
 
   /* Index of series keyed by seriesId, built from a single full pass over the
@@ -160,7 +116,7 @@
   }
 
   function getSeries(seriesId) {
-    return seriesList().find(function (s) { return s.seriesId === seriesId; }) || null;
+    return Store.getSeries(seriesId);
   }
 
   function episodeLabel(ep) {
@@ -417,11 +373,7 @@
     var root = document.createElement("div");
     root.className = "page";
 
-    var all = Store.getItems().filter(function (it) { return !isLiveItem(it); });
-    var mv = all.filter(function (it) { return it.type === "movie"; });
-
-    var byId = {};
-    all.forEach(function (it) { byId[it.id] = it; });
+    var mv = Store.getMovieItems();
 
     var heroPool = mv.filter(function (m) { return m.poster; });
     if (!heroPool.length) heroPool = mv;
@@ -433,8 +385,8 @@
     var history = Store.getHistory();
 
     var recentItems = history
-      .map(function (h) { return byId[h.id]; })
-      .filter(Boolean)
+      .map(function (h) { return Store.getItem(h.id); })
+      .filter(function (it) { return it && !isLiveItem(it); })
       .slice(0, 14);
 
     /* Build the series index once and reuse it everywhere below — the old
@@ -454,12 +406,12 @@
         var cname = id.slice(4);
         if (cname && (catStats.counts[cname] || 0) > 0) watchlist.push(categoryCard(cname, false, catStats));
       } else {
-        var it = byId[id];
+        var it = Store.getItem(id);
         if (it) watchlist.push(it);
       }
     });
 
-    var recentAdded = all.slice().sort(function (a, b) { return (b.addedAt || 0) - (a.addedAt || 0); }).slice(0, 14);
+    var recentAdded = Store.getRecentAdded(14);
 
     appendIf(root, makeRow("Recently Watched", seriesCardFor(recentItems, seriesCardMap, sbyId)));
     appendIf(root, makeRow("Watchlist", seriesCardFor(watchlist, seriesCardMap, sbyId)));
@@ -610,21 +562,13 @@
   }
 
   function categoryItemCount(name) {
-    return Store.getItems().filter(function (it) { return it.type !== "episode" && (it.group || "Uncategorized") === name; }).length;
+    return Store.getItemsByGroup(name).length;
   }
 
   /* Single pass over the library: item count and first poster per category.
      Avoids O(categories × items) work when rendering category cards. */
   function categoryStats() {
-    var counts = {};
-    var posters = {};
-    Store.getItems().forEach(function (it) {
-      if (it.type === "episode") return;
-      var name = it.group || "Uncategorized";
-      counts[name] = (counts[name] || 0) + 1;
-      if (!posters[name] && it.poster) posters[name] = it.poster;
-    });
-    return { counts: counts, posters: posters };
+    return Store.getCategoryStats();
   }
 
   /* Category card with a star toggle to pin/unpin the category in the
@@ -1002,7 +946,7 @@
     header.appendChild(starBtn);
     root.appendChild(header);
 
-    var items = Store.getItems().filter(function (it) { return it.type !== "episode" && (it.group || "Uncategorized") === name; });
+    var items = Store.getItemsByGroup(name);
     if (!items.length) {
       root.appendChild(emptyState("▦", "Empty category", "This category has no items."));
       page.innerHTML = "";
@@ -1528,7 +1472,7 @@
     var items = [];
     list.forEach(function (h) {
       var it = Store.getItem(h.id);
-      if (it) items.push(it);
+      if (it && !isLiveItem(it)) items.push(it);
     });
 
     if (!items.length) {

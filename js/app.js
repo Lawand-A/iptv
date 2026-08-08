@@ -151,6 +151,41 @@
 
   function bindGlobal() {
     document.querySelectorAll("[data-action]").forEach(setAction);
+    bindFooter();
+  }
+
+  function bindFooter() {
+    document.querySelectorAll("[data-footer]").forEach(function (btn) {
+      var action = btn.getAttribute("data-footer");
+      btn.addEventListener("click", function () {
+        if (action === "clear-history") {
+          UI.confirmModal("Clear watch history?", "", function () { Store.clearHistory(); UI.toast("History cleared", "ok"); });
+        } else if (action === "clear-watchlist") {
+          UI.confirmModal("Clear the entire watchlist?", "", function () {
+            Store.getWatchlist().forEach(function (id) { Store.removeFromWatchlist(id); });
+            UI.toast("Watchlist cleared", "ok");
+          });
+        } else if (action === "clear-library") {
+          UI.confirmModal("Clear the entire library?", "All items, history, progress and watchlist will be removed.", function () {
+            Store.clearLibrary();
+            UI.toast("Library cleared", "ok");
+            navigate("#home");
+          });
+        } else if (action === "reset") {
+          UI.confirmModal("Reset everything?", "This wipes all application data. There is no undo.", function () {
+            Store.resetAll();
+            location.hash = "#home";
+            render();
+            UI.toast("Application reset", "ok");
+          });
+        } else if (action === "delete-refresh") {
+          UI.confirmModal("Delete and re-import?", "All current items will be removed, then re-imported from your saved sources. History, progress and watchlist are kept.", function () {
+            Store.saveItems([]);
+            if (UI.refreshSources) UI.refreshSources();
+          });
+        }
+      });
+    });
   }
 
   function init() {
