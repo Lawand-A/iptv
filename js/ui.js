@@ -1747,36 +1747,6 @@
     exportPanel.appendChild(exportBtn);
     grid.appendChild(exportPanel);
 
-    /* Install PWA */
-    var installPanel = panel("Install App", "Add StreamHub to your home screen or desktop for quick access.");
-    installPanel.classList.add("panel-install");
-    var installBtn = buttonEl("btn btn-primary", "⬇ Install StreamHub", function () {
-      var prompt = window.__pwaInstallPrompt;
-      if (prompt) {
-        prompt.prompt();
-        prompt.userChoice.then(function (choice) {
-          window.__pwaInstallPrompt = choice.outcome === "dismissed" ? prompt : null;
-          if (choice.outcome === "accepted") {
-            toast("StreamHub is installing", "ok");
-          }
-        });
-      } else if (/iPad|iPhone|iPod/.test(navigator.userAgent) && navigator.standalone === false) {
-        toast("Tap the Share button, then choose 'Add to Home Screen'", "ok");
-      } else if (location.protocol !== "https:" && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") {
-        toast("PWA install requires HTTPS or localhost. Your current URL is not a secure context.", "err");
-      } else if (!("serviceWorker" in navigator)) {
-        toast("This browser does not support PWA installation.", "err");
-      } else {
-        toast("Install not ready yet — reload the page once so the service worker activates, then try again.", "err");
-      }
-    });
-    installPanel.appendChild(installBtn);
-    var installHint = document.createElement("div");
-    installHint.className = "url-hint";
-    installHint.textContent = "Available when served over HTTP/HTTPS.";
-    installPanel.appendChild(installHint);
-    grid.appendChild(installPanel);
-
     /* Add */
     var addPanel = panel("Add Content", "Manually add a movie or a series episode without a file.");
     addPanel.classList.add("panel-add");
