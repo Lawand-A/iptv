@@ -76,7 +76,13 @@
         else { UI.renderCategories(); updateNav("categories"); }
         break;
       case "series":
-        if (route.arg) { UI.renderSeriesDetails(route.arg); updateNav("series"); }
+        if (route.arg) {
+          var seasonQ = "";
+          var sqm = /(?:^|&)season=([^&]*)/.exec(route.query);
+          if (sqm) seasonQ = decodeURIComponent(sqm[1]);
+          UI.renderSeriesDetails(route.arg, seasonQ);
+          updateNav("series");
+        }
         else { UI.renderSeries(); updateNav("series"); }
         break;
       case "categories": UI.renderCategories(); updateNav("categories"); break;

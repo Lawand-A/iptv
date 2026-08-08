@@ -84,9 +84,16 @@
   function isLiveItem(it) {
     if (!it) return false;
     if (typeof it.live === "boolean") return it.live;
+    if (it.mediaType === "embed") return false;
     var s = String(it.source || "");
-    if (global.M3UParser && M3UParser.isLiveSource) return M3UParser.isLiveSource(s);
-    return /\.m3u8(?:\?|#|$)/i.test(s) || /\/live\//i.test(s) || /\/hls\//i.test(s);
+    var lc = s.toLowerCase();
+    if (/\/movie\//.test(lc) || /\/series\//.test(lc)) return false;
+    if (/\.m3u8(?:\?|#|$)/.test(lc)) return true;
+    if (/\/live\//.test(lc)) return true;
+    if (/\/hls\//.test(lc)) return true;
+    if (/\/(?:live|hls)\./.test(lc)) return true;
+    if (/^(?:rtmp|rtmps|rtsp|udp|srt|mms):\/\//.test(lc)) return true;
+    return false;
   }
 
   function liveItems() {
@@ -389,6 +396,26 @@
       .filter(function (it) { return it && !isLiveItem(it); })
       .slice(0, 14);
 
+    /* Build a map of seriesId -> {season, episode} from history so Recently
+       Watched series cards open the right season and show the ep label. */
+    var watchedInfoBySeries = {};
+    recentItems.forEach(function (it) {
+      if (it && it.type === "episode" && it.seriesId) {
+        if (!watchedInfoBySeries[it.seriesId]) {
+          watchedInfoBySeries[it.seriesId] = {
+            season: it.season,
+            episodeNumber: it.episodeNumber
+          };
+        }
+      }
+    });
+    var watchedSeasonBySeries = {};
+    for (var sid in watchedInfoBySeries) {
+      if (watchedInfoBySeries.hasOwnProperty(sid)) {
+        watchedSeasonBySeries[sid] = watchedInfoBySeries[sid].season;
+      }
+    }
+
     /* Build the series index once and reuse it everywhere below — the old
        code re-ran the full series scan for every watched/series entry,
        which made the home page crawl on large libraries. */
@@ -413,7 +440,7 @@
 
     var recentAdded = Store.getRecentAdded(14);
 
-    appendIf(root, makeRow("Recently Watched", seriesCardFor(recentItems, seriesCardMap, sbyId)));
+    appendIf(root, makeRow("Recently Watched", seriesCardFor(recentItems, seriesCardMap, sbyId, watchedSeasonBySeries, watchedInfoBySeries)));
     appendIf(root, makeRow("Watchlist", seriesCardFor(watchlist, seriesCardMap, sbyId)));
     appendIf(root, makeRow("Movies", mv.slice(0, 24), { link: { label: "View all", href: "#movies" } }));
     appendIf(root, makeRow("Series", seriesCards(allSeries.slice(0, 24)), { link: { label: "View all", href: "#series" } }));
@@ -514,9 +541,11 @@
      referenced series so huge libraries never create cards for series that
      are not shown. `seriesById` (a precomputed seriesId → series map) avoids
      rebuilding the whole series index for every referenced series. */
-  function seriesCardFor(items, map, sById) {
+  function seriesCardFor(items, map, sById, watchedSeasons, watchedInfo) {
     map = map || {};
     sById = sById || seriesById();
+    watchedSeasons = watchedSeasons || {};
+    watchedInfo = watchedInfo || {};
     var seen = {};
     var out = [];
     items.forEach(function (it) {
@@ -524,7 +553,8 @@
         var sr = it.seriesRef;
         if (seen[sr.seriesId]) return;
         seen[sr.seriesId] = true;
-        out.push(map[sr.seriesId] || seriesCards([sr])[0]);
+        var card = map[sr.seriesId] || seriesCards([sr])[0];
+        out.push(card);
         return;
       }
       if (it && it.type === "episode") {
@@ -535,6 +565,24 @@
         if (!e) {
           var s = sById[key];
           if (s) e = seriesCards([s])[0];
+        }
+        /* If we have watched info, override the card subtitle and click. */
+        if (e && watchedInfo[key]) {
+          var info = watchedInfo[key];
+          var sub = e.querySelector(".card-sub");
+          if (sub) {
+            var epCount = "";
+            var s2 = sById[key];
+            if (s2 && s2.episodes) epCount = s2.episodes.length + " episodes · ";
+            sub.textContent = epCount + "S" + pad(info.season) + " E" + pad(info.episodeNumber);
+          }
+          var season = info.season;
+          e.onclick = null;
+          e.removeEventListener("click", e.__clickHandler);
+          e.__clickHandler = function () {
+            App.navigate("#series/" + encodeURIComponent(key) + "?season=" + season);
+          };
+          e.addEventListener("click", e.__clickHandler);
         }
         if (e) { out.push(e); return; }
       }
@@ -726,11 +774,24 @@
     var pinned = {};
     Store.getPins().forEach(function (id) { pinned[id] = true; });
 
+    /* Cache labels to avoid calling labelFor twice per sort comparison. */
+    var labelCache = {};
+    function cachedLabel(it) {
+      if (!labelCache[it.id]) labelCache[it.id] = labelFor(it);
+      return labelCache[it.id];
+    }
     function sortItems() {
       items.sort(function (a, b) {
-        return (pinned[a.id] ? 0 : 1) - (pinned[b.id] ? 0 : 1)
-          || (a.group || "").localeCompare(b.group || "")
-          || labelFor(a).localeCompare(labelFor(b));
+        var pa = pinned[a.id] ? 0 : 1;
+        var pb = pinned[b.id] ? 0 : 1;
+        if (pa !== pb) return pa - pb;
+        var ga = a.group || "", gb = b.group || "";
+        if (ga < gb) return -1;
+        if (ga > gb) return 1;
+        var la = cachedLabel(a), lb = cachedLabel(b);
+        if (la < lb) return -1;
+        if (la > lb) return 1;
+        return 0;
       });
     }
     sortItems();
@@ -986,7 +1047,7 @@
   }
 
   /* ---------- SERIES DETAILS ---------- */
-  function renderSeriesDetails(seriesId) {
+  function renderSeriesDetails(seriesId, seasonQuery) {
     var s = getSeries(seriesId);
     if (!s) {
       page.innerHTML = "";
@@ -1083,7 +1144,9 @@
     } else {
       var selector = document.createElement("div");
       selector.className = "season-selector";
-      var activeSeason = seasonNumbers[0];
+      /* If a season was passed (e.g. from Recently Watched), pre-select it. */
+      var requestedSeason = seasonQuery != null ? Number(seasonQuery) : null;
+      var activeSeason = (requestedSeason != null && seasons[requestedSeason]) ? requestedSeason : seasonNumbers[0];
 
       var pills = {};
       seasonNumbers.forEach(function (n) {

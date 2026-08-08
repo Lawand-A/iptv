@@ -102,34 +102,45 @@
       idxById[it.id] = it;
 
       var type = it.type;
-      if (type !== "movie" && type !== "episode" && type !== "series") type = "movie";
-      idxByType[type].push(it);
-
+      if (type !== "episode" && type !== "series") type = "movie";
       if (type === "episode") {
+        idxByType.episode.push(it);
         idxEpisodes.push(it);
-        var skey = it.seriesId || "series-" + String(it.seriesName || it.title || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-        var rec = idxSeries[skey] || buildSeriesRecord(skey, it.seriesName || it.title);
+        var skey = it.seriesId;
+        if (!skey) {
+          var raw = it.seriesName || it.title || "";
+          skey = "series-" + (raw.length < 50 ? raw.toLowerCase().replace(/\s+/g, "-") : raw.slice(0, 50).toLowerCase().replace(/\s+/g, "-"));
+        }
+        var rec = idxSeries[skey];
+        if (!rec) { rec = buildSeriesRecord(skey, it.seriesName || it.title); idxSeries[skey] = rec; }
         rec.episodes.push(it);
         if (it.poster && !rec.poster) rec.poster = it.poster;
         if (it.description && !rec.description) rec.description = it.description;
         if (it.group && !rec.group) rec.group = it.group;
-        idxSeries[skey] = rec;
       } else if (type === "series") {
-        var rec2 = idxSeries[it.seriesId] || buildSeriesRecord(it.seriesId, it.seriesName || it.title);
-        rec2.poster = it.poster || rec2.poster;
-        rec2.description = it.description || rec2.description;
-        rec2.group = it.group || rec2.group;
-        idxSeries[it.seriesId] = rec2;
+        idxByType.series.push(it);
+        var rec2 = idxSeries[it.seriesId];
+        if (!rec2) { rec2 = buildSeriesRecord(it.seriesId, it.seriesName || it.title); idxSeries[it.seriesId] = rec2; }
+        if (it.poster) rec2.poster = it.poster;
+        if (it.description) rec2.description = it.description;
+        if (it.group) rec2.group = it.group;
       } else {
-        /* movie */
-        if (itemIsLive(it)) {
+        idxByType.movie.push(it);
+        /* Inline live check: if live flag is boolean use it, else check source. */
+        var live = it.live;
+        if (typeof live !== "boolean") {
+          if (it.mediaType === "embed") live = false;
+          else live = isLiveSource(it.source);
+        }
+        if (live) {
           idxLive.push(it);
         } else {
           idxMovies.push(it);
         }
         var gname = it.group || "Uncategorized";
-        if (!idxByGroup[gname]) idxByGroup[gname] = [];
-        idxByGroup[gname].push(it);
+        var garr = idxByGroup[gname];
+        if (!garr) { garr = []; idxByGroup[gname] = garr; }
+        garr.push(it);
         if (it.poster && !idxCategoryPosters[gname]) idxCategoryPosters[gname] = it.poster;
       }
     }
@@ -140,15 +151,22 @@
       if (!idxSeries.hasOwnProperty(sid)) continue;
       var s = idxSeries[sid];
       s.episodes.sort(function (a, b) {
-        return (a.season - b.season) || (a.episodeNumber - b.episodeNumber);
+        var sa = (a.season || 0) - 0, sb = (b.season || 0) - 0;
+        if (sa !== sb) return sa - sb;
+        return ((a.episodeNumber || 0) - 0) - ((b.episodeNumber || 0) - 0);
       });
       idxSeriesList.push(s);
     }
-    idxSeriesList.sort(function (a, b) { return a.seriesName.localeCompare(b.seriesName); });
+    idxSeriesList.sort(function (a, b) {
+      var sa = a.seriesName || "", sb = b.seriesName || "";
+      if (sa < sb) return -1;
+      if (sa > sb) return 1;
+      return 0;
+    });
 
-    /* "Recently added": items appended later are newer, so reverse is enough.
-       This is O(n) instead of O(n log n) sort — critical for 400k+ items. */
-    idxRecentAdded = items.length > 1000 ? items.slice().reverse() : items.slice().sort(function (a, b) { return (b.addedAt || 0) - (a.addedAt || 0); });
+    /* idxRecentAdded is built lazily by getRecentAdded() to avoid O(n) work
+       on every rebuild when it's not needed. */
+    idxRecentAdded = [];
   }
 
   function markIndexesDirty() {
@@ -311,7 +329,6 @@
   /* ---------- Item library ---------- */
   function getItems() {
     if (itemsCache) {
-      rebuildIndexes();
       return itemsCache;
     }
     var legacy = read(KEYS.items, []);
@@ -320,7 +337,6 @@
     itemsCache = rep.items;
     markIndexesDirty();
     if (rep.changed) schedulePersist();
-    rebuildIndexes();
     return itemsCache;
   }
 
@@ -823,6 +839,15 @@
   }
   function getRecentAdded(count) {
     rebuildIndexes();
+    if (!idxRecentAdded.length && itemsCache && itemsCache.length > 1000) {
+      /* Build lazily only when actually needed, not during every rebuildIndexes. */
+      idxRecentAdded = itemsCache.slice();
+      for (var ri = 0, rj = idxRecentAdded.length - 1; ri < rj; ri++, rj--) {
+        var tmp = idxRecentAdded[ri]; idxRecentAdded[ri] = idxRecentAdded[rj]; idxRecentAdded[rj] = tmp;
+      }
+    } else if (!idxRecentAdded.length && itemsCache && itemsCache.length <= 1000) {
+      idxRecentAdded = itemsCache.slice().sort(function (a, b) { return (b.addedAt || 0) - (a.addedAt || 0); });
+    }
     return idxRecentAdded.slice(0, count);
   }
   function getNonLiveItems() {

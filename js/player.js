@@ -27,6 +27,8 @@
     return (h ? h + ":" + pad(m) : m) + ":" + pad(s);
   }
 
+  var watchedBtnPaint = null; /* paint function for the player's watched button */
+
   function startWatchedTimer(item) {
     stopWatchedTimer();
     if (!item || item.live) return;
@@ -34,6 +36,7 @@
     /* Embed sources can't report progress, so mark as watched on open. */
     if (item.mediaType === "embed") {
       Store.markWatched(item.id);
+      if (watchedBtnPaint) watchedBtnPaint();
       if (global.UI) UI.refreshBadges && UI.refreshBadges();
       return;
     }
@@ -51,6 +54,7 @@
       if (!Store.isWatched(currentId)) {
         Store.markWatched(currentId);
         notify("Marked as watched");
+        if (watchedBtnPaint) watchedBtnPaint();
         if (global.UI) UI.refreshBadges && UI.refreshBadges();
       }
       stopWatchedTimer();
@@ -1104,6 +1108,7 @@
     seekControls = null;
     seekFsBtn = null;
     seekPoke = null;
+    watchedBtnPaint = null;
   }
 
   /* Public API */
@@ -1145,9 +1150,22 @@
       ? (item.seriesName ? item.seriesName + " " : "") + "S" + pad(item.season) + "E" + pad(item.episodeNumber) + " — " + (item.episodeTitle || item.title)
       : item.title;
 
-    /* Details target: episode -> series page, movie -> movie details. */
+    /* Fix doubled title: if the episode title already contains the series
+       name, strip it to avoid showing "Series Name S01E03 — Series Name S1 E3". */
+    if (item.type === "episode" && item.seriesName) {
+      var epLabel = item.episodeTitle || item.title || "";
+      var sn = item.seriesName;
+      if (epLabel.indexOf(sn) === 0 || epLabel.toLowerCase().indexOf(sn.toLowerCase()) === 0) {
+        epLabel = epLabel.substring(sn.length).replace(/^[\s:–-]+/, "").trim();
+      }
+      if (epLabel) {
+        title.textContent = (item.seriesName ? item.seriesName + " " : "") + "S" + pad(item.season) + "E" + pad(item.episodeNumber) + " — " + epLabel;
+      }
+    }
+
+    /* Details target: episode -> series page (with season), movie -> movie details. */
     var detailsTarget = item.type === "episode" && item.seriesId
-      ? "#series/" + encodeURIComponent(item.seriesId)
+      ? "#series/" + encodeURIComponent(item.seriesId) + (item.season != null ? "?season=" + item.season : "")
       : "#movie/" + encodeURIComponent(item.id);
 
     var actions = document.createElement("div");
@@ -1189,16 +1207,14 @@
     var note = document.createElement("div");
     note.className = "player-msg player-note";
     note.style.display = "none";
-    note.innerHTML = "Opening the player for at least 60 seconds marks this item as watched.";
+    note.innerHTML = "Direct videos are marked as watched at 85% playback. Embed sources are marked on open.";
 
     /* Small info block under the player: title, source link, description. */
     var info = document.createElement("div");
     info.className = "player-info";
     var infoTitle = document.createElement("div");
     infoTitle.className = "player-info-title";
-    infoTitle.textContent = item.type === "episode"
-      ? (item.seriesName ? item.seriesName + " " : "") + "S" + pad(item.season) + "E" + pad(item.episodeNumber) + " — " + (item.episodeTitle || item.title)
-      : item.title;
+    infoTitle.textContent = title.textContent;
     var infoLink = document.createElement("div");
     infoLink.className = "player-info-link";
     if (/^https?:\/\//i.test(item.source || "") || /^\/\//.test(item.source || "")) {
@@ -1221,13 +1237,42 @@
     root.appendChild(head);
     root.appendChild(wrap);
     root.appendChild(note);
-    if (epNavStrip) root.appendChild(epNavStrip);
+
+    /* Row under the player: prev/next episode buttons on the left,
+       mark watched button on the right. */
+    var underPlayerRow = document.createElement("div");
+    underPlayerRow.className = "player-under-row";
+    if (epNavStrip) underPlayerRow.appendChild(epNavStrip);
+
+    var watchedBtn = document.createElement("button");
+    watchedBtn.className = "btn btn-secondary btn-sm focusable";
+    function paintWatched() {
+      var watched = Store.isWatched(itemId);
+      watchedBtn.textContent = watched ? "✓ Watched" : "Mark as Watched";
+      watchedBtn.classList.toggle("btn-ok", watched);
+    }
+    watchedBtnPaint = paintWatched;
+    paintWatched();
+    watchedBtn.addEventListener("click", function () {
+      if (Store.isWatched(itemId)) {
+        Store.markUnwatched(itemId);
+        notify("Removed from watched");
+      } else {
+        Store.markWatched(itemId);
+        notify("Marked as watched");
+      }
+      paintWatched();
+    });
+    underPlayerRow.appendChild(watchedBtn);
+    root.appendChild(underPlayerRow);
+
     root.appendChild(info);
 
     page.innerHTML = "";
     page.appendChild(root);
 
     startWatchedTimer(item);
+    paintWatched(); /* re-paint after startWatchedTimer, which may mark embeds as watched */
 
     var el = video || wrap.querySelector("iframe");
     if (el) {
