@@ -297,7 +297,8 @@
   function enrichM3uItem(it, base, user, pass) {
     var src = String(it.source || "");
     var m = /\/(\d+)(?:\.([a-z0-9]+))?(\?|$)/i.exec(src);
-    if (!m || src.indexOf(base) !== 0 || DIRECT_MEDIA_RE.test(src)) {
+    if (!m || src.indexOf(base) !== 0 || DIRECT_MEDIA_RE.test(src)
+        || /\/movie\//i.test(src) || /\/series\//i.test(src)) {
       if (it.poster && !/^https?:/i.test(it.poster) && it.poster.indexOf("//") !== 0) {
         return Object.assign({}, it, { poster: absUrl(base, it.poster) });
       }

@@ -149,11 +149,15 @@
      - Xtream-style /live/ paths and /live|/hls path segments or filenames,
      - dedicated streaming protocols (rtmp/rtsp/udp…).
      Bare .ts / .mpd extensions are NOT enough on their own — MPEG-TS and
-     DASH are also used for on-demand movies. */
+     DASH are also used for on-demand movies (those live cases are instead
+     detected via the EXTINF -1 duration or tvg-type attribute in makeItem). */
   function isLiveSource(source) {
     var s = String(source == null ? "" : source).trim();
     if (!s || s.indexOf("<") === 0) return false;
     var lc = s.toLowerCase();
+    /* Explicit VOD/series paths mean the stream is on-demand even when it is
+       served as HLS (.m3u8) — Xtream /movie/ and /series/ endpoints do that. */
+    if (/\/movie\//.test(lc) || /\/series\//.test(lc)) return false;
     if (/\.m3u8(?:\?|#|$)/.test(lc)) return true;
     if (/\/live\//.test(lc)) return true;
     if (/\/hls\//.test(lc)) return true;
@@ -165,6 +169,7 @@
   function makeItem(entry) {
     var title = entry.title || filenameTitle(entry.source);
     var series = matchSeries(title) || matchSeries(entry.attrs["tvg-name"]);
+    var tvgType = String(entry.attrs["tvg-type"] || "").toLowerCase();
 
     var item = {
       id: entry.id,
@@ -172,7 +177,15 @@
       type: "movie",
       mediaType: entry.mediaType,
       source: entry.source,
-      live: isLiveSource(entry.source),
+      /* Live if the URL itself says so, or the playlist explicitly marks it
+         (tvg-type="live"/"radio"). An explicit VOD/movie/series tvg-type
+         overrides the URL heuristic. #EXTINF:-1 is deliberately NOT used —
+         IPTV playlists use it for VOD entries too, which would misclassify
+         movies as live. */
+      live: tvgType === "live" || tvgType === "radio"
+        || (isLiveSource(entry.source)
+            && tvgType !== "vod" && tvgType !== "movie"
+            && tvgType !== "series" && tvgType !== "episode"),
       poster: entry.attrs["tvg-logo"] || entry.attrs["logo"] || entry.attrs["tvg-logo"],
       group: entry.attrs["group-title"] || entry.group || "",
       description: entry.attrs["tvg-description"] || entry.attrs["description"] || "",
@@ -189,6 +202,7 @@
 
     if (series && series.seriesName) {
       item.type = "episode";
+      item.live = false;
       item.seriesName = series.seriesName;
       item.seriesId = "series-" + stableId(series.seriesName);
       item.season = series.season;

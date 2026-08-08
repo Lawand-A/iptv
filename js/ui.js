@@ -76,19 +76,23 @@
 
   /* ---------- data helpers ---------- */
   /* Live items (Xtream channels, HLS/TS/DASH streams) are kept out of Home,
-     Movies and Series — they live in the dedicated Live view instead. Uses
-     the same detection as the M3U parser so imported channels are never
-     mistaken for movies. */
+     Movies and Series — they live in the dedicated Live view instead. The
+     live flag is decided once at import time (M3U parser / Xtream fetch) and
+     trusted here so an item is never re-classified just because its URL ends
+     in .m3u8 or contains /live/ — that re-check is what leaked movies into
+     the Live section and live channels into Movies. */
   function isLiveItem(it) {
     if (!it) return false;
-    if (it.live) return true;
+    if (typeof it.live === "boolean") return it.live;
     var s = String(it.source || "");
     if (global.M3UParser && M3UParser.isLiveSource) return M3UParser.isLiveSource(s);
     return /\.m3u8(?:\?|#|$)/i.test(s) || /\/live\//i.test(s) || /\/hls\//i.test(s);
   }
 
   function liveItems() {
-    return Store.getItems().filter(isLiveItem);
+    return Store.getItems().filter(function (it) {
+      return it.type !== "episode" && it.type !== "series" && isLiveItem(it);
+    });
   }
 
   function movies() {
@@ -337,6 +341,37 @@
     return grid;
   }
 
+  /* A full-width search bar above a paged grid. Typing filters the items
+     (case-insensitive substring over title/seriesName) and re-renders. */
+  function searchableGrid(root, allItems, placeholder, cardFn) {
+    var bar = document.createElement("div");
+    bar.className = "search-bar";
+    var search = document.createElement("input");
+    search.type = "text";
+    search.placeholder = placeholder;
+    search.className = "focusable";
+    bar.appendChild(search);
+    root.appendChild(bar);
+    var gridWrap = document.createElement("div");
+    root.appendChild(gridWrap);
+    function render(q) {
+      gridWrap.innerHTML = "";
+      var ql = (q || "").trim().toLowerCase();
+      var filtered = ql
+        ? allItems.filter(function (it) {
+            return String(it.title || it.seriesName || "").toLowerCase().indexOf(ql) >= 0;
+          })
+        : allItems.slice();
+      if (!filtered.length) {
+        gridWrap.appendChild(emptyState("? ", "No matches", "No result matches \u201C" + q + "\u201D."));
+        return;
+      }
+      pagedGrid(gridWrap, filtered, cardFn);
+    }
+    search.addEventListener("input", function () { render(search.value); });
+    render("");
+  }
+
   function emptyState(icon, title, text, actionBtn) {
     var el = document.createElement("div");
     el.className = "empty";
@@ -548,7 +583,7 @@
   }
 
   function categoryItemCount(name) {
-    return Store.getItems().filter(function (it) { return (it.group || "Uncategorized") === name; }).length;
+    return Store.getItems().filter(function (it) { return it.type !== "episode" && (it.group || "Uncategorized") === name; }).length;
   }
 
   /* Single pass over the library: item count and first poster per category.
@@ -557,6 +592,7 @@
     var counts = {};
     var posters = {};
     Store.getItems().forEach(function (it) {
+      if (it.type === "episode") return;
       var name = it.group || "Uncategorized";
       counts[name] = (counts[name] || 0) + 1;
       if (!posters[name] && it.poster) posters[name] = it.poster;
@@ -641,10 +677,6 @@
     h.className = "section-title";
     h.textContent = "Categories";
     header.appendChild(h);
-    var sub = document.createElement("p");
-    sub.className = "section-sub";
-    sub.textContent = "Browse your library by genre or group. Each category opens with its items on the left and a player on the right.";
-    header.appendChild(sub);
     root.appendChild(header);
 
     var stats = categoryStats();
@@ -697,7 +729,7 @@
     if (!mv.length) {
       root.appendChild(emptyState("▶", "No movies yet", "Movies appear here after importing an M3U playlist."));
     } else {
-      pagedGrid(root, mv, card);
+      searchableGrid(root, mv, "Search movies…", card);
     }
     page.innerHTML = "";
     page.appendChild(root);
@@ -935,7 +967,7 @@
     header.appendChild(starBtn);
     root.appendChild(header);
 
-    var items = Store.getItems().filter(function (it) { return (it.group || "Uncategorized") === name; });
+    var items = Store.getItems().filter(function (it) { return it.type !== "episode" && (it.group || "Uncategorized") === name; });
     if (!items.length) {
       root.appendChild(emptyState("▦", "Empty category", "This category has no items."));
       page.innerHTML = "";
@@ -968,7 +1000,7 @@
     if (!list.length) {
       root.appendChild(emptyState("▶", "No series yet", "Series are detected automatically from episode titles like “Show S01E01”."));
     } else {
-      pagedGrid(root, list, function (s) { return seriesCards([s])[0]; });
+      searchableGrid(root, list, "Search series…", function (s) { return seriesCards([s])[0]; });
     }
     page.innerHTML = "";
     page.appendChild(root);
@@ -1422,7 +1454,13 @@
     } else {
       var grid = document.createElement("div");
       grid.className = "grid";
-      items.slice(0, 30).forEach(function (it) { grid.appendChild(card(it)); });
+      items.slice(0, 30).forEach(function (it) {
+        if (it.type === "episode") {
+          var s = getSeries(it.seriesId || "series-" + M3UParser.stableId(it.seriesName || it.title));
+          if (s) { grid.appendChild(seriesCard(s.seriesId, s.seriesName, s.poster, s.episodes.length)); return; }
+        }
+        grid.appendChild(card(it));
+      });
       root.appendChild(grid);
     }
     page.innerHTML = "";
@@ -1446,7 +1484,7 @@
     bar.className = "search-bar";
     var input = document.createElement("input");
     input.type = "text";
-    input.placeholder = "Search movies, series, episodes, categories…";
+    input.placeholder = "Search movies, series, live channels, categories…";
     input.className = "focusable";
     input.value = initialQ || "";
     bar.appendChild(input);
@@ -1466,15 +1504,21 @@
         results.appendChild(hint);
         return;
       }
-      var moviesHit = [], seriesHit = [], epHit = [];
+      var moviesHit = [], seriesHit = [], seriesMap = {};
+      seriesList().forEach(function (s) {
+        seriesMap[s.seriesId] = s;
+        if ((s.seriesName + " " + s.group).toLowerCase().indexOf(q) > -1) seriesHit.push(s);
+      });
       Store.getItems().forEach(function (it) {
         var hay = (it.title + " " + (it.group || "") + " " + (it.seriesName || "") + " " + (it.episodeTitle || "") + " " + (it.tvgName || "")).toLowerCase();
         if (hay.indexOf(q) === -1) return;
-        if (it.type === "episode") epHit.push(it);
-        else moviesHit.push(it);
-      });
-      seriesList().forEach(function (s) {
-        if ((s.seriesName + " " + s.group).toLowerCase().indexOf(q) > -1) seriesHit.push(s);
+        if (it.type === "episode") {
+          var skey = it.seriesId || "series-" + M3UParser.stableId(it.seriesName || it.title);
+          var sref = seriesMap[skey];
+          if (sref && seriesHit.indexOf(sref) === -1) seriesHit.push(sref);
+          return;
+        }
+        moviesHit.push(it);
       });
 
       var list = document.createElement("div");
@@ -1498,7 +1542,6 @@
       }
       addBlock("Movies", moviesHit);
       addBlock("Series", seriesHit);
-      addBlock("Episodes", epHit);
       if (!list.children.length) {
         var none = document.createElement("div");
         none.className = "empty";
@@ -1519,18 +1562,24 @@
       } else {
         thumb.textContent = "▶";
       }
+      var isSeries = it.type === "series" || (it.seriesName && !it.type);
+      var isLive = isLiveItem(it);
       var body = document.createElement("div");
       var t = document.createElement("div");
       t.className = "r-title";
-      t.textContent = it.type === "episode" ? (it.seriesName + " — " + episodeLabel(it) + (it.episodeTitle ? " · " + it.episodeTitle : "")) : it.title;
+      t.textContent = isSeries ? it.seriesName
+        : it.type === "episode" ? (it.seriesName + " — " + episodeLabel(it) + (it.episodeTitle ? " · " + it.episodeTitle : ""))
+        : it.title;
       var sub = document.createElement("div");
       sub.className = "r-sub";
-      sub.textContent = (it.type === "episode" ? "Episode · " : "Movie · ") + (it.group || "Uncategorized");
+      sub.textContent = (isSeries ? "Series · " : isLive ? "Live · " : it.type === "episode" ? "Episode · " : "Movie · ") + (it.group || "Uncategorized");
       body.appendChild(t);
       body.appendChild(sub);
       row.appendChild(thumb);
       row.appendChild(body);
-      var target = it.type === "episode" ? "#play/" + encodeURIComponent(it.id) : "#movie/" + encodeURIComponent(it.id);
+      var target = isSeries ? "#series/" + encodeURIComponent(it.seriesId || it.id)
+        : it.type === "episode" || isLive ? "#play/" + encodeURIComponent(it.id)
+        : "#movie/" + encodeURIComponent(it.id);
       row.addEventListener("click", function () { App.navigate(target); });
       return row;
     }
@@ -2074,6 +2123,7 @@
           data.episodeTitle = epTitle || title;
         }
       }
+      data.live = type === "movie" && M3UParser.isLiveSource(data.source);
       Store.addItem(data);
       toast("Content added", "ok");
       App.navigate("#home");
@@ -2205,6 +2255,9 @@
           patch.mediaType = "embed";
           patch.source = M3UParser.normalizeEmbedSource(patch.source);
         }
+      }
+      if (String(patch.source) !== String(item.source || "")) {
+        patch.live = type === "movie" ? !!M3UParser.isLiveSource(patch.source) : false;
       }
       Store.updateItem(item.id, patch);
       toast("Changes saved", "ok");

@@ -8,6 +8,7 @@
   var watchedTimer = null;
   var saveTimer = null;
   var currentId = null;
+  var currentLive = false;
   var video = null;
   var active = false;
   var inlineActive = false;
@@ -28,6 +29,7 @@
 
   function startWatchedTimer(item) {
     stopWatchedTimer();
+    if (!item || item.live) return;
     if (Store.isWatched(item.id)) return;
     watchedTimer = setTimeout(function () {
       Store.markWatched(item.id);
@@ -41,7 +43,7 @@
   }
 
   function savePosition() {
-    if (!video || currentId == null) return;
+    if (!video || currentId == null || currentLive) return;
     try {
       if (isFinite(video.currentTime)) {
         Store.saveProgress(currentId, video.currentTime, video.duration || 0);
@@ -81,13 +83,178 @@
     return /\.m3u8(\?|#|$)/i.test(String(source || ""));
   }
 
+  /* ---------- Raw MPEG-TS (.ts / extensionless streams) ----------
+     Chromium browsers cannot play MPEG-TS natively in a <video> tag, so raw
+     .ts live streams need MSE via mpegts.js (loaded on demand, like hls.js). */
+  var MPEGTS_CDN = "https://cdn.jsdelivr.net/npm/mpegts.js@1/dist/mpegts.js";
+  var mpegtsScriptPromise = null;
+  var mpegtsInstance = null;
+
+  function loadMpegts() {
+    if (window.mpegts) return Promise.resolve(true);
+    if (!mpegtsScriptPromise) {
+      mpegtsScriptPromise = new Promise(function (resolve) {
+        var s = document.createElement("script");
+        s.src = MPEGTS_CDN;
+        s.async = true;
+        s.onload = function () { resolve(!!window.mpegts); };
+        s.onerror = function () { resolve(false); };
+        document.head.appendChild(s);
+      });
+    }
+    return mpegtsScriptPromise;
+  }
+
+  /* True for raw-stream sources that native <video> cannot play but mpegts.js
+     can: a .ts/.m2ts/.mts file, or an extensionless live endpoint (the classic
+     Xtream "host/user/pass/id" form serves MPEG-TS). */
+  function needsMpegts(source, isLive) {
+    var s = String(source || "").split(/[?#]/)[0];
+    var m = /\.([a-z0-9]+)$/i.exec(s);
+    var ext = m ? m[1].toLowerCase() : "";
+    if (ext === "ts" || ext === "m2ts" || ext === "mts") return true;
+    return ext === "" && !!isLive;
+  }
+
+  var PROBE_TIMEOUT_MS = 5000;
+
+  function classifyBytes(bytes, ct) {
+    if (bytes.length >= 7 && bytes[0] === 0x23) {
+      var s = "";
+      for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+      if (s.indexOf("#EXTM3U") === 0) return "hls";
+    }
+    if (ct && (ct.indexOf("vnd.apple.mpegurl") >= 0 || ct.indexOf("mpegurl") >= 0)) return "hls";
+    if (bytes.length > 0 && bytes[0] === 0x47) return "ts";
+    return "unknown";
+  }
+
+  var CODEC_NAMES = {
+    "1": "MPEG-1 video", "2": "MPEG-2 video", "10": "MPEG-4 video",
+    "1b": "H.264/AVC video", "24": "H.265/HEVC video",
+    "3": "MPEG-1 audio", "4": "MPEG-2 audio", "f": "AAC audio",
+    "11": "AAC LATM audio", "81": "AC-3 audio", "87": "E-AC-3 audio"
+  };
+
+  /* Best-effort read of the PAT/PMT in the first TS packets to log which
+     video/audio codecs the stream uses (H.265 and AC-3 are often not
+     decodable in Chromium's MSE, which is why mpegts.js stalls at 0). */
+  function detectCodecs(bytes) {
+    var pmtPids = [];
+    var n = Math.floor(bytes.length / 188);
+    var i;
+    for (i = 0; i < n; i++) {
+      var p = i * 188;
+      if (bytes[p] !== 0x47) continue;
+      var pid = ((bytes[p + 1] & 0x1F) << 8) | bytes[p + 2];
+      var afc = (bytes[p + 3] >> 4) & 0x3;
+      if (afc !== 1 && afc !== 3) continue;
+      if ((bytes[p + 3] & 0x40) === 0) continue;
+      if (pid !== 0) continue;
+      var o = p + 4;
+      if (afc === 3) o += bytes[p + 4] + 1;
+      var s = o + 1 + bytes[o];
+      if (bytes[s] !== 0x00) continue;
+      var slen = ((bytes[s + 1] & 0x0F) << 8) | bytes[s + 2];
+      var end = Math.min(s + 3 + slen, bytes.length);
+      var j = s + 8;
+      while (j + 4 <= end) {
+        var prog = (bytes[j] << 8) | bytes[j + 1];
+        var pmpid = ((bytes[j + 2] & 0x1F) << 8) | bytes[j + 3];
+        if (prog !== 0 && pmtPids.indexOf(pmpid) < 0) pmtPids.push(pmpid);
+        j += 4;
+      }
+    }
+    var streams = [];
+    for (i = 0; i < n; i++) {
+      var p2 = i * 188;
+      if (bytes[p2] !== 0x47) continue;
+      var pid2 = ((bytes[p2 + 1] & 0x1F) << 8) | bytes[p2 + 2];
+      if (pmtPids.indexOf(pid2) < 0) continue;
+      var afc2 = (bytes[p2 + 3] >> 4) & 0x3;
+      if (afc2 !== 1 && afc2 !== 3) continue;
+      if ((bytes[p2 + 3] & 0x40) === 0) continue;
+      var o2 = p2 + 4;
+      if (afc2 === 3) o2 += bytes[p2 + 4] + 1;
+      var s2 = o2 + 1 + bytes[o2];
+      if (bytes[s2] !== 0x02) continue;
+      var slen2 = ((bytes[s2 + 1] & 0x0F) << 8) | bytes[s2 + 2];
+      var end2 = Math.min(s2 + 3 + slen2, bytes.length);
+      var proginfo = ((bytes[s2 + 10] & 0x0F) << 8) | bytes[s2 + 11];
+      var j2 = s2 + 12 + proginfo;
+      while (j2 + 5 <= end2) {
+        var st = bytes[j2];
+        var esinfo = ((bytes[j2 + 3] & 0x0F) << 8) | bytes[j2 + 4];
+        streams.push(CODEC_NAMES[st.toString(16)] || ("stream 0x" + st.toString(16)));
+        j2 += 5 + esinfo;
+      }
+    }
+    return streams;
+  }
+
+  /* Peek at a candidate's actual response before picking an engine. URL
+     extensions can lie — Xtream sometimes serves an HLS manifest at a .ts
+     URL, which makes mpegts.js hang silently forever. Dead links (4xx/5xx)
+     are skipped instantly, and a connection that accepts but never delivers
+     bytes (offline channel) times out and moves on instead of freezing. */
+  function probeSource(src) {
+    return new Promise(function (resolve) {
+      var settled = false;
+      function settle(p) {
+        if (settled) return;
+        settled = true;
+        if (window.console) console.log("[player][probe]", src, p);
+        resolve(p);
+      }
+      var ac = null;
+      try { ac = window.AbortController ? new AbortController() : null; } catch (e) { ac = null; }
+      var timer = setTimeout(function () {
+        settle({ kind: "stall", note: "no data within " + (PROBE_TIMEOUT_MS / 1000) + "s" });
+        if (ac) { try { ac.abort(); } catch (e) { /* ignore */ } }
+      }, PROBE_TIMEOUT_MS);
+      var opts = { headers: { "Range": "bytes=0-8191" }, cache: "no-store" };
+      if (ac) opts.signal = ac.signal;
+      try {
+        fetch(src, opts).then(function (res) {
+          if (!res.ok) { settle({ kind: "dead", status: res.status }); return; }
+          var ct = (res.headers.get("content-type") || "").toLowerCase();
+          if (!res.body || !res.body.getReader) { settle({ kind: "unknown", status: res.status, ct: ct }); return; }
+          var reader = res.body.getReader();
+          var acc = 0, parts = [];
+          (function read() {
+            reader.read().then(function (r) {
+              if (r.done || acc >= 2048) {
+                try { reader.cancel(); } catch (e) { /* ignore */ }
+                var buf = new Uint8Array(acc);
+                var off = 0;
+                for (var i = 0; i < parts.length; i++) { buf.set(new Uint8Array(parts[i]), off); off += parts[i].byteLength; }
+                settle({ kind: classifyBytes(buf, ct), status: res.status, ct: ct, bytes: acc, codecs: detectCodecs(buf) });
+              } else {
+                parts.push(r.value); acc += r.value.byteLength; read();
+              }
+            }, function () {
+              try { reader.cancel(); } catch (e) { /* ignore */ }
+              settle({ kind: "unknown", status: res.status, ct: ct });
+            });
+          })();
+        }, function (err) {
+          if (settled) return;
+          settle({ kind: "error", error: String((err && err.message) || err) });
+        });
+      } catch (err) {
+        settle({ kind: "error", error: String((err && err.message) || err) });
+      }
+    });
+  }
+
   function showPlayError(el, item, src) {
     var wrap = el.parentNode;
     if (!wrap || wrap.querySelector(".player-error")) return;
     var url = src || (item && item.source) || "";
+    var detail = (el && el.__lastErr) ? " " + String(el.__lastErr) : "";
     var msg = document.createElement("div");
     msg.className = "player-msg player-error";
-    msg.innerHTML = "<strong>Unable to play this video.</strong><br>The source may be unavailable, blocked (CORS), or in an unsupported format.<br><span style='font-size:12px;word-break:break-all'>" + escapeHtml(url) + "</span>";
+    msg.innerHTML = "<strong>Unable to play this video.</strong><br>The source may be unavailable, blocked (CORS), or in an unsupported format.<br><span style='font-size:12px;word-break:break-all'>" + escapeHtml(url) + "</span>" + (detail ? "<br><span style='font-size:11px;opacity:.7'>" + escapeHtml(detail) + "</span>" : "");
     var row = document.createElement("div");
     row.style.cssText = "display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;justify-content:center";
     if (url && /^https?:\/\//i.test(url)) {
@@ -126,17 +293,26 @@
     el.addEventListener("playing", onPlay);
   }
 
-  function initHls(video, src, saved, onFail) {
+  function initHls(video, src, saved, onFail, isLive) {
     if (!window.Hls || !Hls.isSupported()) {
       video.src = src;
       return;
     }
-    var hls = new Hls();
+    var hls = new Hls({
+      lowLatencyMode: false,
+      liveSyncDurationCount: 8,
+      maxBufferLength: 60,
+      backBufferLength: 60,
+      manifestLoadingMaxRetry: 4,
+      levelLoadingMaxRetry: 4,
+      fragLoadingMaxRetry: 8,
+      keyLoadingMaxRetry: 8
+    });
     hlsInstance = hls;
     hls.loadSource(src);
     hls.attachMedia(video);
     hls.on(Hls.Events.MANIFEST_PARSED, function () {
-      if (saved && saved.position > 5 && saved.progress < 98 && !video.ended) {
+      if (!isLive && saved && saved.position > 5 && saved.progress < 98 && !video.ended) {
         try { video.currentTime = saved.position; } catch (e) { /* ignore */ }
       }
       var p = video.play();
@@ -144,6 +320,8 @@
     });
     hls.on(Hls.Events.ERROR, function (evt, data) {
       if (!data || !data.fatal) return;
+      if (window.console) console.warn("[player] hls fatal:", data.type, data.details, data.fatal);
+      video.__lastErr = data.details || (data.type || "") + ": " + (data.reason || "");
       try { hls.destroy(); } catch (e) { /* ignore */ }
       if (hlsInstance === hls) hlsInstance = null;
       if (onFail) {
@@ -153,6 +331,82 @@
         showPlayError(video, Store.getItem(currentId) || { source: src });
       }
     });
+  }
+
+  /* mpegts.js can buffer a stream it cannot decode via MSE (e.g. H.265 video
+     on Chromium): playback reports "playing" but currentTime never advances
+     and no error fires, so nothing would ever move on. Track whether
+     currentTime is actually progressing (immune to mpegts's own "startup
+     stall jumper" micro-seeks to 0.06). On a stall, retry the stream with
+     WebCodecs decoding, which can handle HEVC that plain MSE cannot. */
+  function watchMpegtsStall(video, onFail, webCodecs) {
+    var lastTime = video.currentTime || 0;
+    var lastChange = Date.now();
+    var timer = setInterval(function () {
+      if (!video.__mpegtsManaged) { clearInterval(timer); return; }
+      if (video.paused) return;
+      var t = video.currentTime || 0;
+      if (t !== lastTime) { lastTime = t; lastChange = Date.now(); return; }
+      var hasData = webCodecs || video.readyState >= 2 || (video.buffered && video.buffered.length > 0);
+      if (hasData && Date.now() - lastChange > 5000) {
+        clearInterval(timer);
+        if (!webCodecs && video.__mpegtsSrc && window.VideoDecoder) {
+          if (window.console) console.warn("[player] mpegts not progressing via MSE — retrying with WebCodecs");
+          try { if (mpegtsInstance) { mpegtsInstance.destroy(); mpegtsInstance = null; } } catch (e) { /* ignore */ }
+          video.__mpegtsManaged = false;
+          if (video.__mpegtsItem) {
+            initMpegts(video, video.__mpegtsSrc, video.__mpegtsItem, onFail, { webCodecs: true });
+          } else {
+            onFail();
+          }
+          return;
+        }
+        if (window.console) console.warn("[player] mpegts not progressing (stuck at " + lastTime + "s) with data buffered — advancing");
+        video.__lastErr = "Stream delivers data but the browser cannot decode it (unsupported video/audio codec)";
+        if (video.__mpegtsSrc) probeSource(video.__mpegtsSrc);
+        if (onFail) {
+          video.__suppressError = true;
+          onFail();
+        } else {
+          showPlayError(video, Store.getItem(currentId) || { source: video.currentSrc || "" });
+        }
+      }
+    }, 500);
+  }
+
+  function initMpegts(video, src, item, onFail, opts) {
+    if (!window.mpegts || !mpegts.isSupported()) {
+      video.src = src;
+      return;
+    }
+    video.__mpegtsManaged = true;
+    video.__mpegtsSrc = src;
+    video.__mpegtsItem = item;
+    var webCodecs = !!(opts && opts.webCodecs);
+    var player = mpegts.createPlayer(
+      { type: "mpegts", isLive: !!item.live, url: src },
+      { lazyLoad: false, enableWebCodecs: webCodecs }
+    );
+    mpegtsInstance = player;
+    player.attachMediaElement(video);
+    player.load();
+    watchMpegtsStall(video, onFail, webCodecs);
+    player.on(mpegts.Events.ERROR, function (type, detail, info) {
+      if (info && !info.fatal) return;
+      if (mpegtsInstance !== player) return;
+      if (window.console) console.warn("[player] mpegts error:", type, detail, info);
+      video.__lastErr = String(type) + (detail ? ": " + String(detail) : "");
+      try { player.destroy(); } catch (e) { /* ignore */ }
+      if (mpegtsInstance === player) mpegtsInstance = null;
+      if (onFail) {
+        video.__suppressError = true;
+        onFail();
+      } else {
+        showPlayError(video, Store.getItem(currentId) || { source: src });
+      }
+    });
+    var p = player.play();
+    if (p && p.catch) p.catch(function () { showTapHint(video); });
   }
 
   /* Custom bottom control bar (play/pause, ±10s seek, time, fullscreen).
@@ -348,6 +602,7 @@
     var lock = false;
     el.__idx = 0;
     el.__hlsManaged = false;
+    el.__mpegtsManaged = false;
 
     function removeMessages() {
       var wrap = el.parentNode;
@@ -356,29 +611,45 @@
       for (var i = msgs.length - 1; i >= 0; i--) msgs[i].remove();
     }
 
-    function destroyCurrentHls() {
+    function destroyManaged() {
       if (hlsInstance) {
         try { hlsInstance.destroy(); } catch (e) { /* ignore */ }
         hlsInstance = null;
+      }
+      if (mpegtsInstance) {
+        try { mpegtsInstance.destroy(); } catch (e) { /* ignore */ }
+        mpegtsInstance = null;
       }
     }
 
     function loadCandidate() {
       var src = candidates[el.__idx];
       if (!src) { showPlayError(el, item); lock = false; return; }
+      if (window.console) console.log("[player] candidate " + (el.__idx + 1) + "/" + candidates.length, src);
       /* Only .m3u8 sources go through hls.js. Live streams served as raw
-         MPEG-TS (.ts) or with no extension play natively in the <video>
-         element — feeding them to hls.js fails because they are not HLS
-         manifests. This is what makes most Xtream .ts live channels work. */
+         MPEG-TS (.ts) or with no extension play through mpegts.js (MSE) —
+         feeding them to the native <video> element fails on Chromium because
+         they are not HLS manifests. Ordinary files (mp4/webm…) stay native. */
       if (isHlsSource(src)) {
         loadHls().then(function (ok) {
           lock = false;
-          if (!ok) { el.__hlsManaged = false; el.src = src; return; }
+          el.__hlsManaged = false;
+          el.__mpegtsManaged = false;
+          if (!ok) { el.src = src; return; }
           el.__hlsManaged = true;
-          initHls(el, src, saved, advance);
+          initHls(el, src, saved, advance, !!item.live);
+        });
+      } else if (needsMpegts(src, item.live)) {
+        loadMpegts().then(function (ok) {
+          lock = false;
+          el.__hlsManaged = false;
+          el.__mpegtsManaged = false;
+          if (!ok) { el.src = src; return; }
+          initMpegts(el, src, item, advance);
         });
       } else {
         el.__hlsManaged = false;
+        el.__mpegtsManaged = false;
         el.src = src;
         lock = false;
       }
@@ -388,7 +659,8 @@
       if (lock) return;
       lock = true;
       el.__hlsManaged = false;
-      destroyCurrentHls();
+      el.__mpegtsManaged = false;
+      destroyManaged();
       el.__idx++;
       if (el.__idx >= candidates.length) {
         lock = false;
@@ -402,7 +674,8 @@
       if (lock) return;
       lock = true;
       el.__hlsManaged = false;
-      destroyCurrentHls();
+      el.__mpegtsManaged = false;
+      destroyManaged();
       el.__idx = 0;
       removeMessages();
       loadCandidate();
@@ -411,7 +684,7 @@
 
     el.addEventListener("error", function () {
       if (el.__suppressError) { el.__suppressError = false; return; }
-      if (el.__hlsManaged) return;
+      if (el.__hlsManaged || el.__mpegtsManaged) return;
       if (el.__idx < candidates.length - 1) advance();
       else showPlayError(el, item);
     });
@@ -440,6 +713,7 @@
     });
 
     el.addEventListener("timeupdate", function () {
+      if (item.live) return;
       var keep = (el.duration || 0) - el.currentTime;
       if (isFinite(keep) && keep > 0.5) Store.addToHistory(currentId, {
         position: el.currentTime, duration: el.duration, progress: el.duration ? Math.round(el.currentTime / el.duration * 100) : 0
@@ -510,12 +784,17 @@
       try { hlsInstance.destroy(); } catch (e) { /* ignore */ }
       hlsInstance = null;
     }
+    if (mpegtsInstance) {
+      try { mpegtsInstance.destroy(); } catch (e) { /* ignore */ }
+      mpegtsInstance = null;
+    }
     if (video) {
       savePosition();
       video.pause();
       video = null;
     }
     currentId = null;
+    currentLive = false;
     seekWrap = null;
     seekControls = null;
     seekFsBtn = null;
@@ -546,6 +825,7 @@
     cancel();
     active = true;
     currentId = itemId;
+    currentLive = !!item.live;
 
     var saved = Store.getProgressFor(itemId);
     Store.addToHistory(itemId, { position: saved.position, duration: saved.duration, progress: saved.progress });
@@ -615,6 +895,7 @@
     active = true;
     inlineActive = true;
     currentId = itemId;
+    currentLive = !!item.live;
 
     var saved = Store.getProgressFor(itemId);
     Store.addToHistory(itemId, { position: saved.position, duration: saved.duration, progress: saved.progress });
