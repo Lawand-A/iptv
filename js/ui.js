@@ -1762,8 +1762,12 @@
         });
       } else if (/iPad|iPhone|iPod/.test(navigator.userAgent) && navigator.standalone === false) {
         toast("Tap the Share button, then choose 'Add to Home Screen'", "ok");
+      } else if (location.protocol !== "https:" && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") {
+        toast("PWA install requires HTTPS or localhost. Your current URL is not a secure context.", "err");
+      } else if (!("serviceWorker" in navigator)) {
+        toast("This browser does not support PWA installation.", "err");
       } else {
-        toast("Install not available. Make sure the page is served over HTTPS/HTTP and the browser supports PWAs.", "err");
+        toast("Install not ready yet — reload the page once so the service worker activates, then try again.", "err");
       }
     });
     installPanel.appendChild(installBtn);
