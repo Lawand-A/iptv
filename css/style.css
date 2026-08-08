@@ -83,6 +83,13 @@ textarea { resize: vertical; min-height: 80px; }
   background: linear-gradient(180deg, rgba(11,14,20,.96) 0%, rgba(11,14,20,.85) 70%, rgba(11,14,20,0) 100%);
   transition: background .3s;
 }
+/* Desktop / big screens: truly fixed bar (sticky is unreliable with
+   body overflow-x hidden). The app content gets matching top padding. */
+@media (min-width: 901px) {
+  .topbar { position: fixed; left: 0; right: 0; }
+  .app { padding-top: 66px; }
+  .focusable { scroll-margin-top: 76px; }
+}
 .topbar.scrolled { background: rgba(11,14,20,.98); }
 .topbar-inner {
   max-width: 1440px;
@@ -561,7 +568,8 @@ textarea { resize: vertical; min-height: 80px; }
 .episode-body { flex: 1; min-width: 0; }
 .episode-name { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .episode-sub { color: var(--text-faint); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.episode-watch { color: var(--text-dim); flex-shrink: 0; font-size: 13px; white-space: nowrap; margin-left: auto; }
+.episode-watch { color: var(--err); flex-shrink: 0; font-size: 13px; white-space: nowrap; margin-left: auto; }
+.episode-watch.watched { color: var(--ok); font-weight: 700; }
 .episode .ep-progress {
   position: absolute;
   bottom: 0; left: 0;
@@ -690,6 +698,56 @@ textarea { resize: vertical; min-height: 80px; }
   font-variant-numeric: tabular-nums;
 }
 .bar-spacer { flex: 1; }
+.bar-volume {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 120px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.bar-volume::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  border: none;
+}
+.bar-volume::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  border: none;
+}
+.bar-vol {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.bar-vol:hover,
+.bar-vol:focus-visible {
+  background: rgba(255, 255, 255, 0.25);
+}
+.bar-vol .bar-ico {
+  width: 16px;
+  height: 16px;
+}
 .player-wrap:fullscreen,
 .player-wrap:-webkit-full-screen {
   width: 100%;
@@ -956,6 +1014,31 @@ textarea { resize: vertical; min-height: 80px; }
 }
 .url-import-row input { flex: 1 1 220px; }
 .url-import-row .btn { flex-shrink: 0; }
+
+/* Maintenance buttons: one row with clear spacing between them. On narrow
+   screens they wrap to multiple lines instead of stacking full-width. */
+.maint-actions { display: flex; flex-direction: row; gap: 14px; flex-wrap: wrap; margin-top: 8px; }
+.maint-actions .btn { margin-top: 0; width: auto; }
+
+/* Desktop library layout: fixed 4-column arrangement so spatial navigation
+   follows a predictable order (mobile keeps the single-column auto-fit). */
+@media (min-width: 1200px) {
+  .settings-grid {
+    grid-template-columns: repeat(4, 1fr);
+    grid-template-areas:
+      "import xtream export add"
+      "edit   delete maint  maint";
+  }
+  .panel-import { grid-area: import; }
+  .panel-xtream { grid-area: xtream; }
+  .panel-export { grid-area: export; }
+  .panel-add { grid-area: add; }
+  .panel-edit { grid-area: edit; }
+  .panel-delete { grid-area: delete; }
+  .panel-maint { grid-area: maint; }
+  .maint-actions { flex-wrap: nowrap; }
+  .maint-actions .btn { flex: 1 1 0; padding: 12px 10px; font-size: 14px; white-space: nowrap; }
+}
 .url-hint {
   font-size: 12px;
   color: var(--text-faint);
@@ -1089,6 +1172,8 @@ textarea { resize: vertical; min-height: 80px; }
 
 @media (max-width: 520px) {
   :root { --card-w: 132px; --card-h: 198px; --row-h: 252px; }
+  .bar-volume { display: none; }
+  .bar-vol { margin-right: 2px; }
   .form-grid { grid-template-columns: 1fr; }
   .modal .form-grid { grid-template-columns: 1fr; }
   .player-head h2 { font-size: 20px; }
