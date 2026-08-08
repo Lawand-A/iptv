@@ -979,14 +979,8 @@
       else showPlayError(el, item);
     });
 
-    /* ←/→ seek ±10s, Enter/Space toggle play. The native controls are
-       replaced by the custom bottom bar, so the default arrow-key seek
-       (~5s) is suppressed here. */
-    el.addEventListener("keydown", function (e) {
-      if (e.key === "ArrowRight") { e.preventDefault(); seekBy(el, 10); if (seekPoke) seekPoke(); }
-      else if (e.key === "ArrowLeft") { e.preventDefault(); seekBy(el, -10); if (seekPoke) seekPoke(); }
-      else if (e.key === "Enter" || e.key === " ") { e.preventDefault(); togglePlay(el); if (seekPoke) seekPoke(); }
-    });
+    /* Arrow/Enter/Space handling is on document (onDocKeydown) so it works
+       in fullscreen regardless of focus. */
 
     /* Click the video to toggle play/pause (mouse only; a touch tap just
        reveals the control bar instead of pausing). */
