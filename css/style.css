@@ -589,6 +589,35 @@ textarea { resize: vertical; min-height: 80px; }
   margin-top: 16px;
   aspect-ratio: 16 / 9;
 }
+.player-wrap .player-loader {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+}
+.player-wrap .player-loader.show {
+  opacity: 1;
+  visibility: visible;
+}
+.player-wrap .player-loader::after {
+  content: "";
+  width: 48px;
+  height: 48px;
+  border: 4px solid rgba(255, 255, 255, 0.25);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: player-spin 1s linear infinite;
+}
+@keyframes player-spin {
+  to { transform: rotate(360deg); }
+}
 .player-wrap video {
   width: 100%;
   height: 100%;
@@ -596,6 +625,36 @@ textarea { resize: vertical; min-height: 80px; }
   object-fit: contain;
   background: #000;
   border: none;
+}
+
+/* Suppress any browser/TV native media controls that may still appear
+   despite the video element having controls=false and controlsList set. */
+.player-wrap video::-webkit-media-controls,
+.player-wrap video::-webkit-media-controls-enclosure,
+.player-wrap video::-webkit-media-controls-panel,
+.player-wrap video::-webkit-media-controls-overlay-enclosure,
+.player-wrap video::-webkit-media-controls-play-button,
+.player-wrap video::-webkit-media-controls-start-playback-button,
+.player-wrap video::-webkit-media-controls-timeline,
+.player-wrap video::-webkit-media-controls-volume-control,
+.player-wrap video::-webkit-media-controls-mute-button,
+.player-wrap video::-webkit-media-controls-fullscreen-button,
+.player-wrap video::-webkit-media-controls-rewind-button,
+.player-wrap video::-webkit-media-controls-return-to-realtime-button,
+.player-wrap video::-webkit-media-controls-toggle-closed-captions-button {
+  display: none !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+.player-wrap video::-webkit-media-controls,
+.player-wrap video::-webkit-media-controls-enclosure,
+.player-wrap video::-webkit-media-controls-panel {
+  display: none !important;
+}
+.player-wrap video::-webkit-media-controls-overlay-play-button,
+.player-wrap video::-webkit-media-controls-play-button,
+.player-wrap video::-webkit-media-controls-start-playback-button {
+  display: none !important;
 }
 .video-bar {
   position: absolute;
@@ -733,12 +792,35 @@ textarea { resize: vertical; min-height: 80px; }
   height: 28px;
   min-width: 28px;
   padding: 0;
-  border: none;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
-  cursor: pointer;
-  transition: background 0.15s ease;
+}
+.bar-vol .bar-ico {
+  width: 16px;
+  height: 16px;
+}
+.bar-epnav-wrap {
+  display: inline-flex;
+  gap: 6px;
+}
+.bar-epnav {
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  min-width: auto;
+}
+.bar-final {
+  opacity: 0.5;
+  cursor: default;
+  pointer-events: none;
+}
+.player-epnav-wrap {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+.player-epnav-wrap .bar-final {
+  opacity: 0.5;
+  pointer-events: none;
 }
 .bar-vol:hover,
 .bar-vol:focus-visible {
@@ -863,7 +945,7 @@ textarea { resize: vertical; min-height: 80px; }
   cursor: pointer;
 }
 .live-item:hover { background: rgba(255, 255, 255, 0.06); }
-.live-item.active { background: rgba(0, 200, 120, 0.16); }
+.live-item.active { background: var(--bg-elev3); }
 .live-item.active .live-ico { background: var(--accent); color: #06120d; }
 .live-ico {
   width: 30px;
@@ -916,11 +998,11 @@ textarea { resize: vertical; min-height: 80px; }
 }
 .live-pin:hover, .live-pin:focus-visible { background: rgba(255, 255, 255, .08); opacity: 1; }
 .live-pin.pinned {
-  background: rgba(0, 200, 120, .14);
+  background: var(--bg-elev3);
   color: var(--accent);
   opacity: 1;
 }
-.live-pin.pinned:hover, .live-pin.pinned:focus-visible { background: rgba(0, 200, 120, .22); }
+.live-pin.pinned:hover, .live-pin.pinned:focus-visible { background: var(--bg-elev2); }
 .live-more {
   font-size: 12px;
   color: var(--text-dim);
@@ -1202,4 +1284,57 @@ textarea { resize: vertical; min-height: 80px; }
 
 @media (pointer: coarse) {
   .card { transform: none !important; }
+}
+
+/* ---------- Footer ---------- */
+.app-footer {
+  padding: 10px 16px;
+  margin-top: auto;
+  background: var(--bg-elev);
+  border-top: 1px solid var(--bg-elev3);
+}
+.app-footer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+}
+.footer-btn {
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--bg-elev3);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+  font-family: inherit;
+}
+.footer-btn:hover,
+.footer-btn:focus-visible {
+  background: var(--bg-elev2);
+  color: var(--text);
+}
+.footer-btn.footer-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.footer-btn.footer-primary:hover,
+.footer-btn.footer-primary:focus-visible {
+  background: var(--accent-hi);
+}
+.footer-btn.footer-danger {
+  border-color: var(--err);
+  color: var(--err);
+}
+.footer-btn.footer-danger:hover,
+.footer-btn.footer-danger:focus-visible {
+  background: var(--err);
+  color: #fff;
+}
+@media (max-width: 520px) {
+  .footer-btn { padding: 5px 8px; font-size: 11px; }
 }
