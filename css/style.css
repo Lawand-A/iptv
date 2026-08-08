@@ -1289,6 +1289,10 @@ textarea { resize: vertical; min-height: 80px; }
 
 @media (pointer: coarse) {
   .card { transform: none !important; }
+  /* On touch devices, hide episode prev/next buttons inside the control bar
+     in both fullscreen and non-fullscreen. The under-player strip is always
+     visible and not affected. */
+  .bar-epnav-wrap { display: none !important; }
 }
 
 /* ---------- Footer ---------- */
