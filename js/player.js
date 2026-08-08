@@ -533,7 +533,7 @@
   var seekFsBtn = null;     /* current fullscreen toggle button       */
   var seekPoke = null;      /* current show/reset-timer function      */
 
-  var HIDE_DELAY_MS = 5000;
+  var HIDE_DELAY_MS = 3000;
 
   function onFullscreenChange() {
     if (seekFsBtn) seekFsBtn.innerHTML = fsIcon();
@@ -739,12 +739,16 @@
     video.addEventListener("pause", function () { playBtn.innerHTML = playIcon(true); });
     video.addEventListener("ended", function () { playBtn.innerHTML = playIcon(true); });
 
-    /* ---- visibility: show on activity, hide after 5s idle ---- */
+    /* ---- visibility: show on activity, hide after 3s idle ---- */
     var hideTimer = null;
+    var lastMouseX = -1, lastMouseY = -1;
 
     function hide() {
-      if (bar.contains(document.activeElement)) {
-        hideTimer = setTimeout(hide, 2000);
+      /* Keep controls visible only if a range slider (seek/volume) has focus.
+         Buttons don't need to keep the bar visible on mobile. */
+      var ae = document.activeElement;
+      if (ae && bar.contains(ae) && ae.tagName === "INPUT" && ae.type === "range") {
+        hideTimer = setTimeout(hide, 1000);
         return;
       }
       bar.classList.remove("show");
@@ -757,15 +761,23 @@
     }
     seekPoke = poke;
 
-    wrap.addEventListener("mousemove", poke);
+    /* Only treat real mouse movement as interaction — browsers fire spurious
+       mousemove events from <video> elements even when the mouse is still. */
+    wrap.addEventListener("mousemove", function (e) {
+      if (e.clientX !== lastMouseX || e.clientY !== lastMouseY) {
+        lastMouseX = e.clientX;
+        lastMouseY = e.clientY;
+        poke();
+      }
+    });
     wrap.addEventListener("mouseleave", function () {
+      lastMouseX = -1; lastMouseY = -1;
       if (hideTimer) clearTimeout(hideTimer);
       hide();
     });
     wrap.addEventListener("touchstart", poke, { passive: true });
+    wrap.addEventListener("touchmove", poke, { passive: true });
     wrap.addEventListener("keydown", poke);
-    video.addEventListener("pause", poke);
-    video.addEventListener("play", poke);
 
     poke();
 
