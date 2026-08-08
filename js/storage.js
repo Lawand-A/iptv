@@ -324,14 +324,16 @@
   }
 
   function saveItems(list) {
-    itemsCache = Array.isArray(list) ? list.filter(isValidItem) : [];
+    if (!Array.isArray(list)) { itemsCache = []; }
+    else if (list.length > 50000) { itemsCache = list; }
+    else { itemsCache = list.filter(isValidItem); }
     markIndexesDirty();
     schedulePersist();
     return true;
   }
 
   function persistNow() {
-    var snapshot = itemsCache ? itemsCache.slice() : [];
+    var snapshot = itemsCache || [];
     var lsSize = 0;
     var small = snapshot.length <= 20000;
     if (small) {
@@ -466,10 +468,13 @@
 
   function schedulePersist() {
     if (persistTimer) return;
+    /* Large libraries: defer persist longer so the UI can render first.
+       Small libraries: persist quickly. */
+    var delay = (itemsCache && itemsCache.length > 50000) ? 300 : 50;
     persistTimer = setTimeout(function () {
       persistTimer = null;
       persistNow();
-    }, 50);
+    }, delay);
   }
 
   /* Flush pending writes when the tab is about to close. */

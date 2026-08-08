@@ -1854,7 +1854,7 @@
 
     var seen = {};
     var added = 0, updated = 0, skipped = 0;
-    var merged = existing.slice();
+    var merged = existing;
 
     parsedItems.forEach(function (newIt) {
       var key = normalizeSource(newIt.source);
@@ -1917,11 +1917,9 @@
     reader.onload = function () {
       var text = reader.result;
       setProgressStatus("Parsing playlist…");
-      setTimeout(function () {
-        setProgressStatus("Importing items…");
-        applyParseResult(M3UParser.parse(text), false);
-        hideProgress();
-      }, 30);
+      setProgressStatus("Importing items…");
+      applyParseResult(M3UParser.parse(text), false);
+      hideProgress();
     };
     reader.onerror = function () { hideProgress(); toast("Could not read that file.", "err"); };
     reader.readAsText(file);
@@ -1960,14 +1958,10 @@
       .then(function (res) {
         setProgressStatus("Parsing playlist…");
         Store.saveSettings({ m3uUrl: res.url });
-        return new Promise(function (resolve) {
-          setTimeout(function () {
-            setProgressStatus("Importing items…");
-            applyParseResult(M3UParser.parse(res.text), isRefresh);
-            hideProgress();
-            resolve(true);
-          }, 30);
-        });
+        setProgressStatus("Importing items…");
+        applyParseResult(M3UParser.parse(res.text), isRefresh);
+        hideProgress();
+        return true;
       })
       .catch(function () {
         hideProgress();
@@ -1997,8 +1991,9 @@
       toast("No saved playlist or provider to refresh. Add one in the Settings page.", "err");
       return;
     }
-    var p = Promise.resolve();
-    jobs.forEach(function (job) { p = p.then(job); });
+    if (jobs.length === 1) { jobs[0](); return; }
+    /* Run both sources in parallel to cut total refresh time in half. */
+    Promise.all(jobs.map(function (j) { return j(); }));
   }
 
   /* ---------- XTREAM PROVIDER ---------- */
