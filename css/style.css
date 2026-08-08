@@ -839,7 +839,7 @@ textarea { resize: vertical; min-height: 80px; }
 }
 
 /* ---------- Search ---------- */
-.search-bar { position: relative; margin-top: 18px; max-width: 720px; }
+.search-bar { position: relative; margin-top: 18px; max-width: none; }
 .search-bar input { font-size: 20px; padding: 14px 16px; border-radius: 12px; }
 .search-results { margin-top: 10px; }
 .result-list { display: flex; flex-direction: column; gap: 6px; max-width: 900px; }
