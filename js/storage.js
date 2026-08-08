@@ -146,8 +146,9 @@
     }
     idxSeriesList.sort(function (a, b) { return a.seriesName.localeCompare(b.seriesName); });
 
-    /* Pre-sort all items by addedAt desc for instant "recently added" rows. */
-    idxRecentAdded = items.slice().sort(function (a, b) { return (b.addedAt || 0) - (a.addedAt || 0); });
+    /* "Recently added": items appended later are newer, so reverse is enough.
+       This is O(n) instead of O(n log n) sort — critical for 400k+ items. */
+    idxRecentAdded = items.length > 1000 ? items.slice().reverse() : items.slice().sort(function (a, b) { return (b.addedAt || 0) - (a.addedAt || 0); });
   }
 
   function markIndexesDirty() {
