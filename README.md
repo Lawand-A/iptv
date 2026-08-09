@@ -2,14 +2,16 @@
 A fully static, single-page web application for organizing and playing IPTV content. No build step, no backend, and no user accounts. Everything runs in the browser and the data stays local.
 
 ## What it does
-StreamHub lets the user import playlists and stream sources into a personal media library with a dark, TV-friendly interface. It supports movies, live TV channels, series with episodes, and **embeddable web players too**. Content can come from M3U playlists, Xtream Codes providers, or manual entries.
+StreamHub lets the user import playlists and stream sources into a personal media library with a dark, TV-friendly interface. 
+
+It supports movies, live TV channels, series with episodes, and **embeddable web players too**. Content can come from M3U playlists, Xtream Codes providers, or manual entries.
 
 The app is designed to work like a lightweight Netflix-style client: poster grids, category rows, searchable lists, resume playback, watchlist, and recently watched.
 
 ## How to use
-Downlaod this github project and then open the `index.html` file with a browser. 
+(Downlaod this github project)[https://github.com/Lawand-A/iptv/archive/refs/heads/main.zip] and then open the `index.html` file with a browser. 
 
-This is a Demo: [http://tv.crackoverflow.com] 
+This is a live Demo: http://tv.crackoverflow.com
 
 ## Main views
 - **Home**: hero banner, recently watched, watchlist, movies, series, categories, and recently added rows.
