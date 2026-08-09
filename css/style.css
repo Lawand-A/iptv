@@ -88,6 +88,12 @@ textarea { resize: vertical; min-height: 80px; }
   background: linear-gradient(180deg, rgba(11,14,20,.96) 0%, rgba(11,14,20,.85) 70%, rgba(11,14,20,0) 100%);
   transition: background .3s;
 }
+/* Safe area for installed PWAs only: push the hamburger/brand below the
+   system status bar on mobile (iPhone notch / Android camera punch-hole).
+   Normal browser mobile view is not affected. */
+@media (display-mode: standalone), (display-mode: fullscreen), (display-mode: minimal-ui) {
+  .topbar { padding-top: env(safe-area-inset-top); }
+}
 /* Desktop / big screens: truly fixed bar (sticky is unreliable with
    body overflow-x hidden). The app content gets matching top padding. */
 @media (min-width: 901px) {
@@ -284,28 +290,7 @@ textarea { resize: vertical; min-height: 80px; }
   transition: transform .18s ease, box-shadow .18s ease;
 }
 .card:hover { transform: translateY(-4px); }
-.card-star {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 3;
-  width: 32px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: rgba(0, 0, 0, .72);
-  color: #ffd34d;
-  font-size: 15px;
-  line-height: 1;
-  cursor: pointer;
-  border: 0;
-  outline: none;
-  transition: transform .15s ease, background .15s ease;
-}
-.card-star:hover, .card-star:focus-visible { background: rgba(0, 0, 0, .95); }
-.card-star:hover { transform: scale(1.12); }
+
 .card-poster {
   width: var(--card-w);
   height: var(--card-h);
