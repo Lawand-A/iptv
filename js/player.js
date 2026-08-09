@@ -759,7 +759,12 @@
     }
 
     function poke() {
+      bar.classList.add("instant");
       bar.classList.add("show");
+      /* Force reflow so the bar becomes visible with transition disabled,
+         then re-enable transitions for the smooth fade-out on hide. */
+      void bar.offsetHeight;
+      bar.classList.remove("instant");
       if (hideTimer) clearTimeout(hideTimer);
       hideTimer = setTimeout(hide, HIDE_DELAY_MS);
     }
@@ -782,6 +787,24 @@
     wrap.addEventListener("touchstart", poke, { passive: true });
     wrap.addEventListener("touchmove", poke, { passive: true });
     wrap.addEventListener("keydown", poke);
+
+    /* Fullscreen overlay: in fullscreen the browser only renders the <video>
+       element inside .player-wrap, so mouse events stop reaching the wrapper.
+       This transparent layer sits above the video (but below the bar) and
+       catches movement/taps to reveal the controls. */
+    var fsOverlay = document.createElement("div");
+    fsOverlay.className = "player-fs-overlay";
+    fsOverlay.addEventListener("pointermove", function (e) {
+      if (e.pointerType === "mouse") poke();
+    });
+    fsOverlay.addEventListener("mousemove", poke);
+    fsOverlay.addEventListener("touchstart", function (e) { poke(); }, { passive: true });
+    fsOverlay.addEventListener("click", function (e) {
+      if (e.pointerType === "touch") return;
+      togglePlay(video);
+      poke();
+    });
+    wrap.appendChild(fsOverlay);
 
     poke();
 
