@@ -1,4 +1,4 @@
-# StreamHub: Free and Personal IPTV Library
+# StreamHub: Free and Personal IPTV player over the web
 A fully static, single-page web application for organizing and playing IPTV content. No build step, no backend, and no user accounts. Everything runs in the browser and the data stays local.
 
 ## What it does
