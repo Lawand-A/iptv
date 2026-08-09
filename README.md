@@ -13,7 +13,7 @@ The app is designed to work like a lightweight Netflix-style client: poster grid
 - Extract the project.
 - Open the `index.html` file with a browser. 
 
-This is a live Demo: http://tv.crackoverflow.com
+This is a live **Demo**: http://tv.crackoverflow.com
 
 ## Main views
 - **Home**: hero banner, recently watched, watchlist, movies, series, categories, and recently added rows.
