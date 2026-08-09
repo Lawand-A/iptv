@@ -678,6 +678,9 @@ textarea { resize: vertical; min-height: 80px; }
   opacity: 1;
   visibility: visible;
 }
+.video-bar.instant {
+  transition: none !important;
+}
 .video-progress {
   -webkit-appearance: none;
   appearance: none;
@@ -849,6 +852,25 @@ textarea { resize: vertical; min-height: 80px; }
   aspect-ratio: auto;
   border-radius: 0;
   margin-top: 0;
+}
+
+/* Transparent overlay that captures mouse/touch in fullscreen so the custom
+   control bar can be revealed when the user moves or taps the screen. It is
+   on top of the video but behind the control bar, and becomes non-interactive
+   while the control bar is visible so the bar buttons remain clickable. */
+.player-fs-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+.player-wrap:fullscreen .player-fs-overlay,
+.player-wrap:-webkit-full-screen .player-fs-overlay {
+  pointer-events: auto;
+}
+.player-wrap:fullscreen .video-bar.show ~ .player-fs-overlay,
+.player-wrap:-webkit-full-screen .video-bar.show ~ .player-fs-overlay {
+  pointer-events: none;
 }
 
 .player-wrap .embed-wrap {
