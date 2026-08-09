@@ -431,7 +431,7 @@
         if (s) watchlist.push({ seriesRef: s });
       } else if (id && id.indexOf("cat:") === 0) {
         var cname = id.slice(4);
-        if (cname && (catStats.counts[cname] || 0) > 0) watchlist.push(categoryCard(cname, false, catStats));
+        if (cname && (catStats.counts[cname] || 0) > 0) watchlist.push(categoryCard(cname, catStats));
       } else {
         var it = Store.getItem(id);
         if (it) watchlist.push(it);
@@ -619,10 +619,9 @@
     return Store.getCategoryStats();
   }
 
-  /* Category card with a star toggle to pin/unpin the category in the
-     watchlist. The star stops propagation so it does not open the category.
-     Pass showStar = false to render the card without the star. */
-  function categoryCard(name, showStar, stats) {
+  /* Category card. Categories always open the split view (items on the left,
+     inline player on the right) — the same layout the Live section uses. */
+  function categoryCard(name, stats) {
     stats = stats || categoryStats();
     var el = document.createElement("button");
     el.className = "card category-card focusable";
@@ -644,25 +643,6 @@
     }
     el.appendChild(art);
 
-    if (showStar !== false) {
-      var star = document.createElement("span");
-      star.className = "card-star focusable";
-      star.setAttribute("role", "button");
-      star.tabIndex = 0;
-      star.setAttribute("aria-label", "Toggle category watchlist");
-      function paintStar() {
-        star.textContent = Store.isCategoryInWatchlist(name) ? "★" : "☆";
-      }
-      paintStar();
-      star.addEventListener("click", function (e) {
-        e.stopPropagation();
-        var on = Store.toggleCategoryWatchlist(name);
-        paintStar();
-        toast(on ? "Category added to watchlist" : "Category removed from watchlist", "ok");
-      });
-      el.appendChild(star);
-    }
-
     var body = document.createElement("div");
     body.className = "card-body";
     var t = document.createElement("div");
@@ -682,7 +662,7 @@
     var st = stats || categoryStats();
     var names = Object.keys(st.counts).sort();
     if (limit) names = names.slice(0, limit);
-    return names.map(function (name) { return categoryCard(name, false, st); });
+    return names.map(function (name) { return categoryCard(name, st); });
   }
 
   /* ---------- CATEGORIES ---------- */
@@ -722,7 +702,7 @@
           gridWrap.appendChild(emptyState("? ", "No matching categories", "No category name matches \u201C" + q + "\u201D."));
           return;
         }
-        pagedGrid(gridWrap, filtered, function (name) { return categoryCard(name, false, stats); });
+        pagedGrid(gridWrap, filtered, function (name) { return categoryCard(name, stats); });
       }
       search.addEventListener("input", function () { renderCatGrid(search.value); });
       renderCatGrid("");
@@ -1477,7 +1457,7 @@
       }
       if (id && id.indexOf("cat:") === 0) {
         var cname = id.slice(4);
-        if (cname && (wlStats.counts[cname] || 0) > 0) cards2.push(categoryCard(cname, true, wlStats));
+        if (cname && (wlStats.counts[cname] || 0) > 0) cards2.push(categoryCard(cname, wlStats));
         return;
       }
       var it = Store.getItem(id);
