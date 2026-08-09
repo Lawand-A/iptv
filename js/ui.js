@@ -774,6 +774,13 @@
     var pinned = {};
     Store.getPins().forEach(function (id) { pinned[id] = true; });
 
+    /* Precompute lowercase search labels once so filtering doesn't call
+       labelFor + toLowerCase for every item on every keystroke. */
+    var searchLabels = new Array(items.length);
+    for (var si = 0; si < items.length; si++) {
+      searchLabels[si] = labelFor(items[si]).toLowerCase();
+    }
+
     /* Cache labels to avoid calling labelFor twice per sort comparison. */
     var labelCache = {};
     function cachedLabel(it) {
@@ -795,6 +802,10 @@
       });
     }
     sortItems();
+    /* Rebuild search labels after sort so indices match. */
+    for (var si2 = 0; si2 < items.length; si2++) {
+      searchLabels[si2] = labelFor(items[si2]).toLowerCase();
+    }
 
     var layout = document.createElement("div");
     layout.className = "live-layout";
@@ -914,11 +925,11 @@
     function renderList(q) {
       listBody.innerHTML = "";
       var ql = (q || "").trim().toLowerCase();
-      var max = opts.maxRows || 1000;
+      var max = ql ? 500 : (opts.maxRows || 1000);
       var shown = 0;
-      items.forEach(function (it) {
-        if (ql && labelFor(it).toLowerCase().indexOf(ql) === -1) return;
-        if (!ql && shown >= max) return;
+      for (var fi = 0; fi < items.length && shown < max; fi++) {
+        if (ql && searchLabels[fi].indexOf(ql) === -1) continue;
+        var it = items[fi];
         shown++;
         var wrap = rowFor(it);
         if (it.id === playingId) {
@@ -926,7 +937,7 @@
           if (r) r.classList.add("active");
         }
         listBody.appendChild(wrap);
-      });
+      }
       if (!ql && shown === max && items.length > max) {
         var note = document.createElement("div");
         note.className = "live-more";
@@ -941,7 +952,11 @@
       }
     }
 
-    filter.addEventListener("input", function () { renderList(filter.value); });
+    var filterTimer = null;
+    filter.addEventListener("input", function () {
+      if (filterTimer) clearTimeout(filterTimer);
+      filterTimer = setTimeout(function () { renderList(filter.value); }, 80);
+    });
 
     return { layout: layout, render: renderList };
   }
