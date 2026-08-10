@@ -5,7 +5,7 @@
    never cached — they must always hit the network. */
 "use strict";
 
-var VERSION = "streamhub-v4";
+var VERSION = "streamhub-v6";
 var SHELL = [
   "./index.html",
   "./manifest.json",
@@ -62,18 +62,18 @@ self.addEventListener("fetch", function (e) {
   var sameOrigin = url.indexOf(self.location.origin) === 0;
 
   if (sameOrigin) {
-    /* App shell & same-origin assets: cache first, then network, and keep the
-       cache fresh in the background. */
+    /* App shell & same-origin assets: network-first with cache fallback, so
+       code updates are picked up on the next reload instead of being stuck
+       behind a stale cache-first copy. The cache keeps the app usable offline. */
     e.respondWith(
-      caches.match(req, { ignoreSearch: true }).then(function (cached) {
-        var net = fetch(req).then(function (res) {
-          if (res && res.ok) {
-            var copy = res.clone();
-            caches.open(VERSION).then(function (cache) { cache.put(req, copy); });
-          }
-          return res;
-        }).catch(function () { return cached; });
-        return cached || net;
+      fetch(req).then(function (res) {
+        if (res && res.ok) {
+          var copy = res.clone();
+          caches.open(VERSION).then(function (cache) { cache.put(req, copy); });
+        }
+        return res;
+      }).catch(function () {
+        return caches.match(req, { ignoreSearch: true });
       })
     );
     return;
