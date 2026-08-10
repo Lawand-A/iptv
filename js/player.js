@@ -1135,6 +1135,14 @@
   }
 
   /* Public API */
+  /* Preload hls.js/mpegts.js in the background so the first live/stream play
+     does not wait for a CDN script fetch + parse. Idempotent: the loaders
+     cache their script promises, so this is a no-op once loaded. */
+  function preloadStreamLibs() {
+    loadHls();
+    loadMpegts();
+  }
+
   function play(itemId) {
     var item = Store.getItem(itemId);
     if (!item) { notify("Content not found.", true); if (global.App) App.navigate("#home"); return; }
@@ -1361,6 +1369,7 @@
     fullscreen: fullscreen,
     cancel: cancel,
     isActive: function () { return active; },
+    preloadStreamLibs: preloadStreamLibs,
     escape: escape
   };
 })(window);

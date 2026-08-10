@@ -205,7 +205,15 @@
     window.addEventListener("beforeunload", function () {
       Player.cancel();
     });
-    boot.then(function () { booted = true; render(); });
+    boot.then(function () {
+      booted = true;
+      render();
+      /* Fetch hls.js/mpegts.js in the background so the first live/stream
+         play starts instantly instead of waiting for a CDN download. */
+      if (Player && Player.preloadStreamLibs) {
+        setTimeout(Player.preloadStreamLibs, 1200);
+      }
+    });
   }
 
   global.App = {

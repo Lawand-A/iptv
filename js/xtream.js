@@ -7,7 +7,7 @@
 (function (global) {
   "use strict";
 
-  if (global.console) console.log("[build] xtream.js v9 (lazy series episodes)");
+  if (global.console) console.log("[build] xtream.js v10 (lazy series episodes)");
 
   var API_PATH = "player_api.php";
 

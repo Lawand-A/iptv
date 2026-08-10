@@ -3,7 +3,7 @@
 (function (global) {
   "use strict";
 
-  var BUILD = 9;
+  var BUILD = 10;
   if (global.console) console.log("[build] ui.js v" + BUILD);
   var versionTag = document.querySelector(".app-footer-version");
   if (versionTag) versionTag.textContent = "StreamHub · Build " + BUILD;
@@ -490,21 +490,55 @@
     root.appendChild(bar);
     var gridWrap = document.createElement("div");
     root.appendChild(gridWrap);
-    function render(q) {
+
+    /* Precompute lowercase search keys once so filtering huge libraries
+       (100k+ items) never calls toLowerCase per item per keystroke. */
+    var keys = new Array(allItems.length);
+    for (var ki = 0; ki < allItems.length; ki++) {
+      keys[ki] = String(allItems[ki].title || allItems[ki].seriesName || "").toLowerCase();
+    }
+
+    function renderGrid(list) {
       gridWrap.innerHTML = "";
-      var ql = (q || "").trim().toLowerCase();
-      var filtered = ql
-        ? allItems.filter(function (it) {
-            return String(it.title || it.seriesName || "").toLowerCase().indexOf(ql) >= 0;
-          })
-        : allItems.slice();
-      if (!filtered.length) {
-        gridWrap.appendChild(emptyState("? ", "No matches", "No result matches \u201C" + q + "\u201D."));
+      if (!list.length) {
+        gridWrap.appendChild(emptyState("? ", "No matches", "No result matches your search."));
         return;
       }
-      pagedGrid(gridWrap, filtered, cardFn);
+      pagedGrid(gridWrap, list, cardFn);
     }
-    search.addEventListener("input", function () { render(search.value); });
+
+    function render(q) {
+      var ql = (q || "").trim().toLowerCase();
+      if (!ql) {
+        renderGrid(allItems.slice());
+        return;
+      }
+      var hits = [];
+      var CHUNK = 8000;
+      var i = 0;
+      render.seq = (render.seq || 0) + 1;
+      var seq = render.seq;
+      function step() {
+        /* A newer keystroke superseded this scan; drop it. */
+        if (seq !== render.seq) return;
+        var end = Math.min(i + CHUNK, allItems.length);
+        for (; i < end; i++) {
+          if (keys[i].indexOf(ql) >= 0) hits.push(allItems[i]);
+        }
+        if (i < allItems.length) {
+          setTimeout(step, 0);
+        } else if (seq === render.seq) {
+          renderGrid(hits);
+        }
+      }
+      step();
+    }
+
+    var timer = null;
+    search.addEventListener("input", function () {
+      clearTimeout(timer);
+      timer = setTimeout(function () { render(search.value); }, 120);
+    });
     render("");
   }
 
@@ -1061,34 +1095,52 @@
       return wrap;
     }
 
+    var listGen = 0;
     function renderList(q) {
+      var gen = ++listGen;
       listBody.innerHTML = "";
       var ql = (q || "").trim().toLowerCase();
       var max = ql ? 500 : (opts.maxRows || 1000);
+      var rows = [];
+      var i = 0;
       var shown = 0;
-      for (var fi = 0; fi < items.length && shown < max; fi++) {
-        if (ql && searchLabels[fi].indexOf(ql) === -1) continue;
-        var it = items[fi];
-        shown++;
-        var wrap = rowFor(it);
-        if (it.id === playingId) {
-          var r = wrap.querySelector(".live-item");
-          if (r) r.classList.add("active");
+      function buildChunk() {
+        /* A newer filter/render superseded this one; drop it. */
+        if (gen !== listGen) return;
+        var CHUNK = 200;
+        var inChunk = 0;
+        for (; i < items.length && shown < max && inChunk < CHUNK; i++) {
+          if (ql && searchLabels[i].indexOf(ql) === -1) continue;
+          shown++;
+          inChunk++;
+          var wrap = rowFor(items[i]);
+          if (items[i].id === playingId) {
+            var r = wrap.querySelector(".live-item");
+            if (r) r.classList.add("active");
+          }
+          rows.push(wrap);
         }
-        listBody.appendChild(wrap);
+        if (i < items.length && shown < max) {
+          setTimeout(buildChunk, 0);
+          return;
+        }
+        var frag = document.createDocumentFragment();
+        for (var k = 0; k < rows.length; k++) frag.appendChild(rows[k]);
+        listBody.appendChild(frag);
+        if (!ql && shown === max && items.length > max) {
+          var note = document.createElement("div");
+          note.className = "live-more";
+          note.textContent = "Showing " + max + " of " + items.length + " — type in the filter to see the rest.";
+          listBody.appendChild(note);
+        }
+        /* Auto-select the first item so the player pane is never left showing
+           the "Select a channel" placeholder — especially useful on mobile. */
+        if (opts.autoplay && !playingId && shown > 0 && !ql) {
+          var first = listBody.querySelector(".live-item");
+          if (first) { try { first.click(); } catch (e) { /* ignore */ } }
+        }
       }
-      if (!ql && shown === max && items.length > max) {
-        var note = document.createElement("div");
-        note.className = "live-more";
-        note.textContent = "Showing " + max + " of " + items.length + " — type in the filter to see the rest.";
-        listBody.appendChild(note);
-      }
-      /* Auto-select the first item so the player pane is never left showing
-         the "Select a channel" placeholder — especially useful on mobile. */
-      if (opts.autoplay && !playingId && shown > 0 && !ql) {
-        var first = listBody.querySelector(".live-item");
-        if (first) { try { first.click(); } catch (e) { /* ignore */ } }
-      }
+      buildChunk();
     }
 
     var filterTimer = null;
@@ -1123,6 +1175,8 @@
       page.appendChild(root);
       return;
     }
+
+    if (global.Player && Player.preloadStreamLibs) Player.preloadStreamLibs();
 
     var sv = splitView(items, { filterPlaceholder: "Filter channels…", placeholder: "▶ Select a channel", showGroup: true, autoplay: true });
     root.appendChild(sv.layout);
@@ -1168,6 +1222,8 @@
       page.appendChild(root);
       return;
     }
+
+    if (global.Player && Player.preloadStreamLibs) Player.preloadStreamLibs();
 
     var sv = splitView(items, { filterPlaceholder: "Filter items…", placeholder: "▶ Select an item", autoplay: true });
     root.appendChild(sv.layout);
@@ -1782,33 +1838,33 @@
     results.className = "search-results";
     root.appendChild(results);
 
-    function run(q) {
-      results.innerHTML = "";
-      q = (q || "").trim().toLowerCase();
-      if (!q) {
-        var hint = document.createElement("div");
-        hint.className = "empty";
-        hint.innerHTML = '<div class="big">&#128269;</div><h3>Type to search</h3><p>Results appear as you type.</p>';
-        results.appendChild(hint);
-        return;
-      }
-      var moviesHit = [], seriesHit = [], seriesMap = {};
-      seriesList().forEach(function (s) {
+    /* Precompute searchable text once per page render. The library is static
+       during a search session, and rebuilding 300k+ haystack strings on every
+       keystroke is what froze the UI. */
+    var searchCache = null;
+    function buildCache() {
+      var series = seriesList();
+      var seriesMap = {};
+      var hay = [];
+      for (var i = 0; i < series.length; i++) {
+        var s = series[i];
         seriesMap[s.seriesId] = s;
-        if ((s.seriesName + " " + s.group).toLowerCase().indexOf(q) > -1) seriesHit.push(s);
-      });
+        hay.push({ it: s, seriesRef: s, isEpisode: false, hay: (s.seriesName + " " + (s.group || "")).toLowerCase() });
+      }
       Store.getItems().forEach(function (it) {
-        var hay = (it.title + " " + (it.group || "") + " " + (it.seriesName || "") + " " + (it.episodeTitle || "") + " " + (it.tvgName || "")).toLowerCase();
-        if (hay.indexOf(q) === -1) return;
+        if (it.type === "series") return;
+        var h = ((it.title || "") + " " + (it.group || "") + " " + (it.seriesName || "") + " " + (it.episodeTitle || "") + " " + (it.tvgName || "")).toLowerCase();
         if (it.type === "episode") {
           var skey = it.seriesId || "series-" + M3UParser.stableId(it.seriesName || it.title);
-          var sref = seriesMap[skey];
-          if (sref && seriesHit.indexOf(sref) === -1) seriesHit.push(sref);
-          return;
+          hay.push({ it: it, seriesRef: seriesMap[skey] || null, isEpisode: true, hay: h });
+        } else {
+          hay.push({ it: it, seriesRef: null, isEpisode: false, hay: h });
         }
-        moviesHit.push(it);
       });
+      searchCache = hay;
+    }
 
+    function renderResults(q, moviesHit, seriesHit) {
       var list = document.createElement("div");
       list.className = "result-list";
       function addBlock(title, arr) {
@@ -1838,6 +1894,46 @@
       } else {
         results.appendChild(list);
       }
+    }
+
+    function run(q) {
+      results.innerHTML = "";
+      q = (q || "").trim().toLowerCase();
+      if (!q) {
+        var hint = document.createElement("div");
+        hint.className = "empty";
+        hint.innerHTML = '<div class="big">&#128269;</div><h3>Type to search</h3><p>Results appear as you type.</p>';
+        results.appendChild(hint);
+        return;
+      }
+      if (!searchCache) buildCache();
+      var moviesHit = [], seriesHit = [];
+      var CHUNK = 8000;
+      var i = 0;
+      run.seq = (run.seq || 0) + 1;
+      var seq = run.seq;
+      function step() {
+        /* A newer keystroke superseded this scan; drop it. */
+        if (seq !== run.seq) return;
+        var end = Math.min(i + CHUNK, searchCache.length);
+        for (; i < end; i++) {
+          var d = searchCache[i];
+          if (d.hay.indexOf(q) === -1) continue;
+          if (d.isEpisode) {
+            if (d.seriesRef && seriesHit.indexOf(d.seriesRef) === -1) seriesHit.push(d.seriesRef);
+          } else if (d.seriesRef) {
+            if (seriesHit.indexOf(d.seriesRef) === -1) seriesHit.push(d.seriesRef);
+          } else {
+            moviesHit.push(d.it);
+          }
+        }
+        if (i < searchCache.length) {
+          setTimeout(step, 0);
+        } else if (seq === run.seq) {
+          renderResults(q, moviesHit, seriesHit);
+        }
+      }
+      step();
     }
 
     function resultRow(it) {
