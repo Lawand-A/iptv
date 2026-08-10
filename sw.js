@@ -5,7 +5,7 @@
    never cached — they must always hit the network. */
 "use strict";
 
-var VERSION = "streamhub-v9";
+var VERSION = "streamhub-v10";
 var SHELL = [
   "./index.html",
   "./manifest.json",
