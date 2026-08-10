@@ -3,6 +3,11 @@
 (function (global) {
   "use strict";
 
+  var BUILD = 6;
+  if (global.console) console.log("[build] ui.js v" + BUILD);
+  var versionTag = document.querySelector(".app-footer-version");
+  if (versionTag) versionTag.textContent = "StreamHub · Build " + BUILD;
+
   var page = document.getElementById("app");
   var modalRoot = document.getElementById("modalRoot");
   var toastRoot = document.getElementById("toastRoot");
@@ -124,6 +129,36 @@
 
   function getSeries(seriesId) {
     return Store.getSeries(seriesId);
+  }
+
+  /* Deduplicated in-flight lazy loads for Xtream series whose episodes are not
+     imported eagerly (see Xtream.fetchSeriesEpisodes). Resolves to the episode
+     items after they are merged into the library. */
+  var xtSeriesLoading = {};
+
+  function loadXtreamEpisodes(seriesId, rec) {
+    if (xtSeriesLoading[seriesId]) return xtSeriesLoading[seriesId];
+    var settings = Store.getSettings();
+    var container = Store.getItem(seriesId) || {};
+    var base = container.xtBase || (settings.xtream && settings.xtream.base) || "";
+    var regs = settings.xtreamProviders || {};
+    var creds = regs[base] || (settings.xtream && settings.xtream.base === base ? settings.xtream : null);
+    var ctx = creds ? { base: base, username: creds.username, password: creds.password } : null;
+    var p = Promise.resolve(ctx).then(function (c) {
+      if (!c || !c.base || !c.username || !c.password) {
+        throw new Error("This series' provider is no longer connected. Re-import that provider to load its episodes.");
+      }
+      return global.Xtream.fetchSeriesEpisodes(c, seriesId, rec.seriesName, rec.group);
+    }).then(function (eps) {
+      delete xtSeriesLoading[seriesId];
+      if (!eps || !eps.length) return [];
+      return mergeIntoLibraryAsync(eps).then(function () { return eps; });
+    }).catch(function (err) {
+      delete xtSeriesLoading[seriesId];
+      throw err;
+    });
+    xtSeriesLoading[seriesId] = p;
+    return p;
   }
 
   function episodeLabel(ep) {
@@ -1130,7 +1165,35 @@
 
     var seasonNumbers = Object.keys(seasons).map(Number).sort(function (a, b) { return a - b; });
 
-    if (!seasonNumbers.length) {
+    if (!seasonNumbers.length && /^xt-series-/i.test(String(seriesId))) {
+      var loadBox = emptyState("…", "Loading episodes…", "Fetching this series from your provider…");
+      root.appendChild(loadBox);
+      loadXtreamEpisodes(seriesId, s).then(function (eps) {
+        var r = global.App && App.parseRoute();
+        var stillHere = r && r.name === "series" && r.arg === seriesId;
+        if (eps && eps.length) {
+          if (stillHere) App.render();
+        } else {
+          loadBox.innerHTML = '<div class="big">…</div>';
+          var h = loadBox.querySelector("h3"); if (h) h.textContent = "No episodes";
+          var p2 = loadBox.querySelector("p"); if (p2) p2.textContent = "This series has no episodes on the provider.";
+          var retry = document.createElement("button");
+          retry.className = "btn btn-secondary focusable";
+          retry.textContent = "Retry";
+          retry.addEventListener("click", function () { App.navigate("#series/" + encodeURIComponent(seriesId)); });
+          loadBox.appendChild(retry);
+        }
+      }).catch(function (err) {
+        loadBox.innerHTML = '<div class="big">!</div>';
+        var h = loadBox.querySelector("h3"); if (h) h.textContent = "Could not load episodes";
+        var p2 = loadBox.querySelector("p"); if (p2) p2.textContent = err && err.message ? err.message : "Unknown error";
+        var retry = document.createElement("button");
+        retry.className = "btn btn-secondary focusable";
+        retry.textContent = "Retry";
+        retry.addEventListener("click", function () { App.navigate("#series/" + encodeURIComponent(seriesId)); });
+        loadBox.appendChild(retry);
+      });
+    } else if (!seasonNumbers.length) {
       var addBtn = document.createElement("button");
       addBtn.className = "btn btn-primary focusable";
       addBtn.textContent = "Add an episode";
@@ -2046,10 +2109,19 @@
     function fetchText(u, rest) {
       var ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
       var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 60000) : null;
-      var opts = ctrl ? { signal: ctrl.signal } : {};
+      var opts = { referrerPolicy: "no-referrer" };
+      if (ctrl) opts.signal = ctrl.signal;
       return fetch(u, opts).then(function (res) {
         if (timer) clearTimeout(timer);
-        if (!res.ok) throw new Error("HTTP " + res.status);
+        if (!res.ok) {
+          return res.text().catch(function () { return ""; }).then(function (body) {
+            var e = new Error("HTTP " + res.status);
+            e.status = res.status;
+            var t = String(body || "").trim().replace(/\s+/g, " ");
+            if (t) e.body = t.slice(0, 300);
+            throw e;
+          });
+        }
         return res.text();
       }).then(function (text) {
         return { url: u, text: text };
@@ -2075,10 +2147,12 @@
         hideProgress();
         return true;
       })
-      .catch(function () {
+      .catch(function (err) {
         hideProgress();
         var msg = "Could not fetch the playlist from that URL. The link may be wrong or the server blocks it (CORS).";
-        if (isHttpsPage && /^http:\/\//i.test(url)) {
+        if (err && err.status) {
+          msg = "The playlist URL answered with HTTP " + err.status + (err.body ? " — the server says: \"" + err.body + "\"" : "") + ". This is the provider's own rejection (not a browser block) — test the link directly in a browser tab and check with your provider.";
+        } else if (isHttpsPage && /^http:\/\//i.test(url)) {
           msg = "Blocked: this page is HTTPS but the playlist URL is HTTP. Browsers refuse to call http:// from a https:// page (mixed content). Fix: open this app over HTTP instead, or use an https:// address if the provider offers one.";
         }
         toast(msg, "err");
@@ -2115,7 +2189,15 @@
       toast("Server URL, username and password are required.", "err");
       return Promise.resolve(false);
     }
-    Store.saveSettings({ xtream: { base: baseClean, username: username, password: password } });
+    /* Keep a per-provider credential registry (keyed by server base) so lazy
+       series-episode loads still work after switching to another provider. */
+    var xtSettings = Store.getSettings();
+    var regs = Object.assign({}, xtSettings.xtreamProviders || {});
+    regs[baseClean] = { username: username, password: password };
+    Store.saveSettings({
+      xtream: { base: baseClean, username: username, password: password },
+      xtreamProviders: regs
+    });
     showProgress(isRefresh ? "Refreshing…" : "Importing…", "Contacting provider…");
     return Xtream.fetchLibrary(baseClean, username, password)
       .then(function (res) {

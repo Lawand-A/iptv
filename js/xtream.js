@@ -7,6 +7,8 @@
 (function (global) {
   "use strict";
 
+  if (global.console) console.log("[build] xtream.js v6 (lazy series episodes)");
+
   var API_PATH = "player_api.php";
 
   function enc(v) { return encodeURIComponent(String(v == null ? "" : v)); }
@@ -31,7 +33,10 @@
     var ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
     var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 30000) : null;
     return new Promise(function (resolve, reject) {
-      fetch(url, ctrl ? { signal: ctrl.signal } : {}).then(function (res) {
+      /* no-referrer: many IPTV servers reject requests that carry a website
+         Referer (hotlink protection). Opening the app from file:// sent no
+         Referer, so this keeps that behaviour when the app is hosted. */
+      fetch(url, Object.assign(ctrl ? { signal: ctrl.signal } : {}, { referrerPolicy: "no-referrer" })).then(function (res) {
         if (timer) clearTimeout(timer);
         resolve(res);
       }, function (err) {
@@ -47,10 +52,17 @@
   function fetchDirect(url, parse) {
     return request(url).then(function (res) {
       if (!res.ok) {
-        var e = new Error("HTTP " + res.status);
-        e.http = true;
-        e.status = res.status;
-        throw e;
+        /* Providers often put the real reason (expired account, wrong
+           credentials, etc.) in the error body — read it and carry it through
+           so it can be shown to the user. */
+        return res.text().catch(function () { return ""; }).then(function (body) {
+          var e = new Error("HTTP " + res.status);
+          e.http = true;
+          e.status = res.status;
+          var t = String(body || "").trim().replace(/\s+/g, " ");
+          if (t) e.body = t.slice(0, 300);
+          throw e;
+        });
       }
       return parse(res);
     });
@@ -76,6 +88,10 @@
     if (err && err.name === "AbortError") {
       return "The provider took too long to respond (timeout after 30s). Check that the server address and port are correct.";
     }
+    if (err && err.http) {
+      var body = err.body ? " Server says: \"" + err.body + "\"." : "";
+      return "The provider answered with HTTP " + err.status + "." + body + " This is the provider's own rejection (not a browser block) — usually wrong or expired credentials, max connections reached, or the account being restricted. Test the same URL directly in a browser tab, and check with your provider.";
+    }
     var pageProto = global.location ? global.location.protocol : "";
     var m = /^([a-z]+):\/\//i.exec(String(url || ""));
     var targetProto = m ? m[1] : "";
@@ -86,28 +102,6 @@
       return "The app is opened straight from disk (file://), and Chrome/Edge block all network requests from file:// pages. Open this app via http:// or https://, then try again.";
     }
     return "Could not reach the provider: either its server does not allow cross-origin requests (no CORS headers) or it is unreachable. Open the server URL in a browser tab to confirm it responds. If it loads there but not here, the server blocks CORS and no static HTML page can read it — ask the provider to enable CORS.";
-  }
-
-  /* Run worker over items with limited concurrency, skipping failures. */
-  function pool(items, worker, limit) {
-    var i = 0;
-    var results = new Array(items.length);
-    function run() {
-      if (i >= items.length) return Promise.resolve();
-      var idx = i++;
-      return Promise.resolve().then(function () {
-        return worker(items[idx], idx);
-      }).catch(function () {
-        return null;
-      }).then(function (r) {
-        results[idx] = r;
-        return run();
-      });
-    }
-    var workers = [];
-    var n = Math.min(limit || 5, items.length);
-    for (var k = 0; k < n; k++) workers.push(run());
-    return Promise.all(workers).then(function () { return results; });
   }
 
   /* First non-empty value among candidate keys. */
@@ -222,13 +216,15 @@
     });
   }
 
-  function seriesInfoToEpisodes(info, series, base, user, pass, catMap) {
+  function seriesInfoToEpisodes(info, series, base, user, pass, catMap, groupFallback) {
     var items = [];
     var infoName = pick(info, ["name"]) || pick(series, ["name"]) || "Series";
     var cover = absUrl(base, iconOf(pick(info, ["cover"])) || iconOf(pick(series, ["cover"])));
     var seasons = [];
-    if (Array.isArray(info.seasons)) seasons = info.seasons;
-    else if (info.episodes && typeof info.episodes === "object") {
+    if (Array.isArray(info.seasons)) seasons = info.seasons.slice();
+    /* Some providers (notably trial accounts) leave `seasons` empty and put the
+       episodes in the `episodes` object keyed by season number instead. */
+    if (!seasons.length && info.episodes && typeof info.episodes === "object") {
       Object.keys(info.episodes).forEach(function (sNum) {
         if (Array.isArray(info.episodes[sNum])) {
           seasons.push({ season_number: parseInt(sNum, 10) || 1, episodes: info.episodes[sNum] });
@@ -245,13 +241,14 @@
         it.type = "episode";
         it.source = seriesUrl(base, user, pass, epId, ext);
         it.poster = absUrl(base, iconOf(ep.info ? pick(ep.info, ["movie_image"]) : "")) || cover;
-        it.group = catMap[series.category_id] || pick(series, ["category_name"]) || "Series";
+        it.group = catMap[series.category_id] || pick(series, ["category_name"]) || groupFallback || "Series";
         it.description = ep.info ? pick(ep.info, ["plot"]) || "" : "";
         it.seriesId = "xt-series-" + series.series_id;
         it.seriesName = infoName;
         it.season = seasonNo;
         it.episode = seasonNo;
-        it.episodeNumber = ep.episode_number != null ? parseInt(ep.episode_number, 10) : 0;
+        it.episodeNumber = ep.episode_number != null ? parseInt(ep.episode_number, 10)
+          : (ep.episode_num != null ? parseInt(ep.episode_num, 10) : 0);
         it.episodeTitle = ep.title || "";
         items.push(it);
       });
@@ -271,20 +268,35 @@
         it.group = catMap[s.category_id] || pick(s, ["category_name"]) || "Series";
         it.seriesId = "xt-series-" + s.series_id;
         it.seriesName = name;
+        it.xtSeriesId = String(s.series_id);
+        it.xtBase = base;
         return it;
       });
-      return pool(list, function (s) {
-        return fetchJson(apiUrl(base, user, pass, "get_series_info", { series_id: s.series_id }))
-          .then(function (info) {
-            return seriesInfoToEpisodes(info, s, base, user, pass, catMap);
-          });
-      }, 10).then(function (episodeGroups) {
-        var episodes = [];
-        episodeGroups.forEach(function (eps) {
-          if (Array.isArray(eps)) episodes = episodes.concat(eps);
-        });
-        return { containers: containers, episodes: episodes };
-      });
+      /* Episodes are loaded lazily per-series (fetchSeriesEpisodes) so importing
+         a provider with tens of thousands of series never needs one
+         get_series_info request per series just to build the library. */
+      return { containers: containers, episodes: [] };
+    });
+  }
+
+  /* Lazy per-series episode loader. `ctx` is the saved provider connection
+     { base, username, password } from settings.xtream. Resolves to the episode
+     items of a single series, fetched on demand when the series is opened. */
+  function fetchSeriesEpisodes(ctx, seriesId, name, group) {
+    var m = /^xt-series-(\d+)$/.exec(String(seriesId || ""));
+    if (!m) return Promise.reject(new Error("This series has no Xtream provider id."));
+    if (!ctx || !ctx.base || !ctx.username || !ctx.password) {
+      return Promise.reject(new Error("The provider's credentials are no longer saved. Re-import the provider to load episodes."));
+    }
+    var b = cleanBase(ctx.base);
+    return fetchJson(apiUrl(b, ctx.username, ctx.password, "get_series_info", { series_id: m[1] })).then(function (info) {
+      if (!info || typeof info !== "object" || Array.isArray(info)) return [];
+      return seriesInfoToEpisodes(info, {
+        series_id: m[1],
+        category_id: null,
+        category_name: "",
+        name: name
+      }, b, ctx.username, ctx.password, {}, group);
     });
   }
 
@@ -344,10 +356,12 @@
   }
 
   function fetchJsonApi(b, user, pass) {
+    if (global.UI && UI.setProgressStatus) UI.setProgressStatus("Fetching provider categories…");
     var liveCat = fetchCategories(b, user, pass, "get_live_categories");
     var vodCat = fetchCategories(b, user, pass, "get_vod_categories");
     var seriesCat = fetchCategories(b, user, pass, "get_series_categories");
     return Promise.all([liveCat, vodCat, seriesCat]).then(function (cats) {
+      if (global.UI && UI.setProgressStatus) UI.setProgressStatus("Fetching live channels, movies and series…");
       return Promise.all([
         fetchLive(b, user, pass, cats[0]),
         fetchVod(b, user, pass, cats[1]),
@@ -386,20 +400,27 @@
 
     function fetchFrom(baseForAttempt) {
       return fetchM3u(baseForAttempt, user, pass).catch(function () {
+        if (global.UI && UI.setProgressStatus) {
+          UI.setProgressStatus("Provider blocked the playlist (get.php). Fetching via its API instead…");
+        }
         return fetchJsonApi(baseForAttempt, user, pass);
       });
     }
 
+    var lastErr = null;
     var p = Promise.reject(new Error("__start__"));
-    attempts.forEach(function (ab) { p = p.catch(function () { return fetchFrom(ab); }); });
+    attempts.forEach(function (ab) {
+      p = p.catch(function (err) { lastErr = err; return fetchFrom(ab); });
+    });
     return p.catch(function () {
-      throw new Error(describeFetchError(new Error("fetch failed"), m3uUrl(b, user, pass)));
+      throw new Error(describeFetchError(lastErr, m3uUrl(b, user, pass)));
     });
   }
 
   global.Xtream = {
     cleanBase: cleanBase,
     fetchLibrary: fetchLibrary,
+    fetchSeriesEpisodes: fetchSeriesEpisodes,
     apiUrl: apiUrl
   };
 })(window);
