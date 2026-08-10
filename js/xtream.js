@@ -7,7 +7,7 @@
 (function (global) {
   "use strict";
 
-  if (global.console) console.log("[build] xtream.js v6 (lazy series episodes)");
+  if (global.console) console.log("[build] xtream.js v9 (lazy series episodes)");
 
   var API_PATH = "player_api.php";
 
@@ -221,16 +221,30 @@
     var infoName = pick(info, ["name"]) || pick(series, ["name"]) || "Series";
     var cover = absUrl(base, iconOf(pick(info, ["cover"])) || iconOf(pick(series, ["cover"])));
     var seasons = [];
-    if (Array.isArray(info.seasons)) seasons = info.seasons.slice();
-    /* Some providers (notably trial accounts) leave `seasons` empty and put the
-       episodes in the `episodes` object keyed by season number instead. */
-    if (!seasons.length && info.episodes && typeof info.episodes === "object") {
+    var bySeason = {};
+    /* Some providers put the episodes inside info.seasons entries; others only
+       in the info.episodes map keyed by season number (notably trial accounts,
+       whose `seasons` array is metadata-only). Merge both, preferring whichever
+       actually contains episodes, deduped by season number. */
+    if (Array.isArray(info.seasons)) {
+      info.seasons.forEach(function (s) {
+        var n = s.season_number != null ? parseInt(s.season_number, 10) : 1;
+        var eps = Array.isArray(s.episodes) ? s.episodes : [];
+        if (eps.length) bySeason[n] = { season_number: n, episodes: eps };
+      });
+    }
+    if (info.episodes && typeof info.episodes === "object") {
       Object.keys(info.episodes).forEach(function (sNum) {
-        if (Array.isArray(info.episodes[sNum])) {
-          seasons.push({ season_number: parseInt(sNum, 10) || 1, episodes: info.episodes[sNum] });
+        var eps = info.episodes[sNum];
+        if (Array.isArray(eps) && eps.length) {
+          var n = parseInt(sNum, 10) || 1;
+          if (!bySeason[n]) bySeason[n] = { season_number: n, episodes: eps };
         }
       });
     }
+    Object.keys(bySeason).sort(function (a, b) { return a - b; }).forEach(function (k) {
+      seasons.push(bySeason[k]);
+    });
     seasons.forEach(function (season) {
       var seasonNo = season.season_number != null ? season.season_number : 1;
       (Array.isArray(season.episodes) ? season.episodes : []).forEach(function (ep) {

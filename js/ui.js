@@ -3,7 +3,7 @@
 (function (global) {
   "use strict";
 
-  var BUILD = 6;
+  var BUILD = 9;
   if (global.console) console.log("[build] ui.js v" + BUILD);
   var versionTag = document.querySelector(".app-footer-version");
   if (versionTag) versionTag.textContent = "StreamHub · Build " + BUILD;
@@ -136,28 +136,152 @@
      items after they are merged into the library. */
   var xtSeriesLoading = {};
 
-  function loadXtreamEpisodes(seriesId, rec) {
-    if (xtSeriesLoading[seriesId]) return xtSeriesLoading[seriesId];
+  /* In-flight background "fill every series" fetch; prevents restarts from
+     re-running while a fill is already in progress. */
+  var allFetchPromise = null;
+
+  /* Set once a fill completes, so merely visiting the Series page does not
+     immediately restart a fill for series that failed; the button still lets
+     the user retry manually. */
+  var allFetchDoneOnce = false;
+
+  /* When true, an import automatically starts the background fill. */
+  var xtSeriesAutoFill = true;
+
+  /* Network-only fetch of a series' episodes (no merge/persist), shared by the
+     lazy open path and the background fill so one place owns credentials. */
+  function fetchSeriesEpisodesItems(seriesId, rec) {
     var settings = Store.getSettings();
     var container = Store.getItem(seriesId) || {};
     var base = container.xtBase || (settings.xtream && settings.xtream.base) || "";
     var regs = settings.xtreamProviders || {};
     var creds = regs[base] || (settings.xtream && settings.xtream.base === base ? settings.xtream : null);
     var ctx = creds ? { base: base, username: creds.username, password: creds.password } : null;
-    var p = Promise.resolve(ctx).then(function (c) {
-      if (!c || !c.base || !c.username || !c.password) {
-        throw new Error("This series' provider is no longer connected. Re-import that provider to load its episodes.");
-      }
-      return global.Xtream.fetchSeriesEpisodes(c, seriesId, rec.seriesName, rec.group);
-    }).then(function (eps) {
-      delete xtSeriesLoading[seriesId];
-      if (!eps || !eps.length) return [];
-      return mergeIntoLibraryAsync(eps).then(function () { return eps; });
-    }).catch(function (err) {
-      delete xtSeriesLoading[seriesId];
-      throw err;
-    });
+    if (!ctx || !ctx.base || !ctx.username || !ctx.password) {
+      return Promise.reject(new Error("This series' provider is no longer connected. Re-import that provider to load its episodes."));
+    }
+    return global.Xtream.fetchSeriesEpisodes(ctx, seriesId, rec.seriesName, rec.group);
+  }
+
+  function loadXtreamEpisodes(seriesId, rec) {
+    if (xtSeriesLoading[seriesId]) return xtSeriesLoading[seriesId];
+    var p = fetchSeriesEpisodesItems(seriesId, rec)
+      .then(function (eps) {
+        delete xtSeriesLoading[seriesId];
+        if (!eps || !eps.length) return [];
+        return queuedMerge(eps).then(function () { return eps; });
+      })
+      .catch(function (err) {
+        delete xtSeriesLoading[seriesId];
+        throw err;
+      });
     xtSeriesLoading[seriesId] = p;
+    return p;
+  }
+
+  /* Fetch missing episodes for every series that has none, in the background.
+     Network requests run concurrently, but per-series library merges are
+     batched: rebuilding the whole library index once per series is what made
+     the app grind to a halt on a 50k-series provider. The fill also pauses
+     while the player is active so it never competes with video/live playback.
+     `listArg` is optional. Safe to call repeatedly: while a fill is running the
+     in-flight promise is returned, and once every series has episodes it is a
+     no-op. Resolves to the number of series that yielded episodes. */
+  function fetchAllSeriesEpisodes(listArg) {
+    if (allFetchPromise) return allFetchPromise;
+    var list = (listArg || seriesList()).filter(function (s) { return !s.episodes.length; });
+    if (!list.length) return Promise.resolve(0);
+    var total = list.length;
+    var done = 0, found = 0, failed = 0;
+    var CONC = 4;
+    var BATCH = 5000;
+    var buffer = [];
+    var flushBusy = null;
+    var i = 0;
+    var statusTimer = null;
+
+    function setStatus() {
+      if (statusTimer) return;
+      statusTimer = setTimeout(function () {
+        statusTimer = null;
+        var btn = document.getElementById("seriesFetchBtn");
+        if (btn) btn.textContent = "Fetching series episodes… " + done + " / " + total + (found ? " · " + found + " with episodes" : "");
+      }, 200);
+    }
+
+    function flush() {
+      if (!buffer.length) return Promise.resolve();
+      if (flushBusy) return flushBusy;
+      var items = buffer;
+      buffer = [];
+      flushBusy = queuedMerge(items).then(function (c) { flushBusy = null; return c; });
+      flushBusy.catch(function () { flushBusy = null; });
+      return flushBusy;
+    }
+
+    function drain() {
+      return flush().then(function () { return buffer.length ? drain() : null; });
+    }
+
+    function playerBusy() {
+      var p = global.Player;
+      return !!(p && typeof p.isActive === "function" && p.isActive());
+    }
+
+    function fetchOne(s) {
+      function tryFetch() {
+        return fetchSeriesEpisodesItems(s.seriesId, s).then(function (eps) {
+          if (eps && eps.length) {
+            found++;
+            buffer.push.apply(buffer, eps);
+          }
+        });
+      }
+      return tryFetch().catch(function () {
+        /* trial providers occasionally throttle bursts; retry once */
+        return tryFetch().catch(function () { failed++; });
+      });
+    }
+
+    function next() {
+      if (i >= list.length) return Promise.resolve();
+      var s = list[i++];
+      function step() {
+        return fetchOne(s).then(function () {
+          done++;
+          setStatus();
+        });
+      }
+      if (playerBusy()) {
+        /* Don't compete with playback: persist what we have and wait until the
+           player closes before fetching more. */
+        return flush().then(function () {
+          return new Promise(function (resolveWait) {
+            var iv = setInterval(function () {
+              if (!playerBusy()) {
+                clearInterval(iv);
+                resolveWait(step().then(function () { return next(); }));
+              }
+            }, 800);
+          });
+        });
+      }
+      return step().then(function () { return next(); });
+    }
+
+    var workers = [];
+    for (var k = 0; k < CONC; k++) workers.push(next());
+    var p = Promise.all(workers).then(function () {
+      return drain().then(function () {
+        allFetchPromise = null;
+        allFetchDoneOnce = true;
+        toast("Fetched series episodes · " + found + " populated" + (failed ? " · " + failed + " skipped" : ""), "ok");
+        if (global.App && App.render) App.render();
+        return found;
+      });
+    });
+    p.catch(function () { allFetchPromise = null; });
+    allFetchPromise = p;
     return p;
   }
 
@@ -1066,6 +1190,17 @@
     header.appendChild(h);
     root.appendChild(header);
 
+    if (seriesList().some(function (s) { return !s.episodes.length; })) {
+      var loadBtn = document.createElement("button");
+      loadBtn.id = "seriesFetchBtn";
+      loadBtn.className = "btn btn-secondary focusable";
+      loadBtn.style.marginBottom = "14px";
+      loadBtn.textContent = "Fetch all series episodes";
+      loadBtn.setAttribute("aria-label", "Fetch episodes for all series that have none");
+      loadBtn.addEventListener("click", function () { fetchAllSeriesEpisodes(); });
+      root.appendChild(loadBtn);
+    }
+
     var list = seriesList();
     if (!list.length) {
       root.appendChild(emptyState("▶", "No series yet", "Series are detected automatically from episode titles like “Show S01E01”."));
@@ -1074,6 +1209,12 @@
     }
     page.innerHTML = "";
     page.appendChild(root);
+
+    /* Populate real episode counts in the background whenever the page is
+       visited; a running fill is not restarted and a finished one is a no-op. */
+    if (!allFetchDoneOnce && Store.getSettings().xtream && Store.getSettings().xtream.base && list.some(function (s) { return !s.episodes.length; })) {
+      fetchAllSeriesEpisodes(list);
+    }
   }
 
   /* ---------- SERIES DETAILS ---------- */
@@ -1975,6 +2116,16 @@
      thousand items at a time and yields between chunks, so importing a huge
      playlist into a large library no longer freezes the UI.
      Resolves with { added, updated, skipped }. */
+  /* Serialize all library merges so a background fill, a lazy episode load and
+     an import never interleave inside mergeIntoLibraryAsync (each one rebuilds
+     and persists the whole library). */
+  var mergeQueue = Promise.resolve();
+  function queuedMerge(items, onProgress) {
+    var run = mergeQueue.then(function () { return mergeIntoLibraryAsync(items, onProgress); });
+    mergeQueue = run.catch(function () {});
+    return run;
+  }
+
   function mergeIntoLibraryAsync(parsedItems, onProgress) {
     return new Promise(function (resolve) {
       var p = mergePlanner(Store.getItems());
@@ -2151,7 +2302,11 @@
         hideProgress();
         var msg = "Could not fetch the playlist from that URL. The link may be wrong or the server blocks it (CORS).";
         if (err && err.status) {
-          msg = "The playlist URL answered with HTTP " + err.status + (err.body ? " — the server says: \"" + err.body + "\"" : "") + ". This is the provider's own rejection (not a browser block) — test the link directly in a browser tab and check with your provider.";
+          if (/get\.php/i.test(url) && /username=/i.test(url)) {
+            msg = "This is an Xtream export link and the provider rejected it (HTTP " + err.status + ") — many accounts block the get.php playlist. Use the Xtream panel in Settings (server URL + username + password) instead; it imports through the provider's API.";
+          } else {
+            msg = "The playlist URL answered with HTTP " + err.status + (err.body ? " — the server says: \"" + err.body + "\"" : "") + ". This is the provider's own rejection (not a browser block) — test the link directly in a browser tab and check with your provider.";
+          }
         } else if (isHttpsPage && /^http:\/\//i.test(url)) {
           msg = "Blocked: this page is HTTPS but the playlist URL is HTTP. Browsers refuse to call http:// from a https:// page (mixed content). Fix: open this app over HTTP instead, or use an https:// address if the provider offers one.";
         }
@@ -2207,12 +2362,15 @@
           return false;
         }
         setProgressStatus("Importing items…");
-        return mergeIntoLibraryAsync(res.items, function (pct) {
+        return queuedMerge(res.items, function (pct) {
           setProgressStatus("Importing items… " + pct + "%");
         }).then(function (c) {
           hideProgress();
           toast("Xtream: Added " + c.added + " · Updated " + c.updated + " · Duplicates skipped " + c.skipped, "ok");
           if (isRefresh && App && App.render) App.render();
+          if (xtSeriesAutoFill && seriesList().some(function (s) { return !s.episodes.length; })) {
+            fetchAllSeriesEpisodes();
+          }
           return true;
         });
       })
@@ -2745,6 +2903,7 @@
     isWatched: isWatched,
     seriesList: seriesList,
     getSeries: getSeries,
+    fetchAllSeriesEpisodes: fetchAllSeriesEpisodes,
     isLiveItem: isLiveItem,
     liveItems: liveItems
   };
