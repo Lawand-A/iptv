@@ -1902,7 +1902,38 @@
      New sources are added; matching sources update metadata (no duplicates).
      Does a single batched save so huge playlists import without O(n^2) writes. */
   function mergeIntoLibrary(parsedItems) {
-    var existing = Store.getItems();
+    var p = mergePlanner(Store.getItems());
+    parsedItems.forEach(p.mergeItem);
+    Store.saveItems(p.merged);
+    return p.counts();
+  }
+
+  /* Chunked variant used by the import paths. The same merge runs a few
+     thousand items at a time and yields between chunks, so importing a huge
+     playlist into a large library no longer freezes the UI.
+     Resolves with { added, updated, skipped }. */
+  function mergeIntoLibraryAsync(parsedItems, onProgress) {
+    return new Promise(function (resolve) {
+      var p = mergePlanner(Store.getItems());
+      var i = 0;
+      var CHUNK = 2000;
+      function step() {
+        var end = Math.min(i + CHUNK, parsedItems.length);
+        for (; i < end; i++) p.mergeItem(parsedItems[i]);
+        if (onProgress) onProgress(parsedItems.length ? Math.floor((i / parsedItems.length) * 100) : 100);
+        if (i < parsedItems.length) {
+          setTimeout(step, 0);
+        } else {
+          Store.saveItems(p.merged);
+          resolve(p.counts());
+        }
+      }
+      step();
+    });
+  }
+
+  /* Shared per-item merge logic plus an O(n) source/id lookup index. */
+  function mergePlanner(existing) {
     var bySource = new Map();
     var indexById = new Map();
     existing.forEach(function (it, i) {
@@ -1914,7 +1945,7 @@
     var added = 0, updated = 0, skipped = 0;
     var merged = existing;
 
-    parsedItems.forEach(function (newIt) {
+    function mergeItem(newIt) {
       var key = normalizeSource(newIt.source);
       /* Series containers have no source — use a synthetic key so they merge properly. */
       if (!key && newIt.type === "series" && newIt.seriesId) key = "series:" + newIt.seriesId;
@@ -1951,22 +1982,31 @@
         bySource.set(key, newIt);
         added++;
       }
-    });
+    }
 
-    Store.saveItems(merged);
-    return { added: added, updated: updated, skipped: skipped };
+    return {
+      merged: merged,
+      mergeItem: mergeItem,
+      counts: function () { return { added: added, updated: updated, skipped: skipped }; }
+    };
   }
 
-  function applyParseResult(result, stay) {
+  /* Async import path: merges without freezing the UI and reports progress.
+     Resolves true when items were imported. */
+  function applyParseResultAsync(result, stay) {
     if (result.errors.length) toast(result.errors.join(" "), "err");
     if (!result.items.length) {
       toast("No playable entries found.", "err");
-      return;
+      return Promise.resolve(false);
     }
-    var c = mergeIntoLibrary(result.items);
-    toast("Added " + c.added + " · Updated " + c.updated + " · Duplicates skipped " + c.skipped, "ok");
-    if (stay) App.render();
-    else App.navigate("#home");
+    return mergeIntoLibraryAsync(result.items, function (pct) {
+      setProgressStatus("Importing items… " + pct + "%");
+    }).then(function (c) {
+      toast("Added " + c.added + " · Updated " + c.updated + " · Duplicates skipped " + c.skipped, "ok");
+      if (stay) App.render();
+      else App.navigate("#home");
+      return true;
+    });
   }
 
   function importFile(file) {
@@ -1975,9 +2015,13 @@
     reader.onload = function () {
       var text = reader.result;
       setProgressStatus("Parsing playlist…");
-      setProgressStatus("Importing items…");
-      applyParseResult(M3UParser.parse(text), false);
-      hideProgress();
+      M3UParser.parseAsync(text, function (pct) {
+        setProgressStatus("Parsing playlist… " + pct + "%");
+      }).then(function (result) {
+        return applyParseResultAsync(result, false);
+      }).then(function () {
+        hideProgress();
+      });
     };
     reader.onerror = function () { hideProgress(); toast("Could not read that file.", "err"); };
     reader.readAsText(file);
@@ -2000,12 +2044,17 @@
     }
 
     function fetchText(u, rest) {
-      return fetch(u).then(function (res) {
+      var ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+      var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 60000) : null;
+      var opts = ctrl ? { signal: ctrl.signal } : {};
+      return fetch(u, opts).then(function (res) {
+        if (timer) clearTimeout(timer);
         if (!res.ok) throw new Error("HTTP " + res.status);
         return res.text();
       }).then(function (text) {
         return { url: u, text: text };
       }).catch(function (err) {
+        if (timer) clearTimeout(timer);
         if (rest.length) return fetchText(rest[0], rest.slice(1));
         throw err;
       });
@@ -2014,10 +2063,15 @@
     showProgress(isRefresh ? "Refreshing…" : "Importing…", "Fetching playlist…");
     return fetchText(attempts[0], attempts.slice(1))
       .then(function (res) {
-        setProgressStatus("Parsing playlist…");
         Store.saveSettings({ m3uUrl: res.url });
-        setProgressStatus("Importing items…");
-        applyParseResult(M3UParser.parse(res.text), isRefresh);
+        setProgressStatus("Parsing playlist…");
+        return M3UParser.parseAsync(res.text, function (pct) {
+          setProgressStatus("Parsing playlist… " + pct + "%");
+        }).then(function (result) {
+          return applyParseResultAsync(result, isRefresh);
+        });
+      })
+      .then(function () {
         hideProgress();
         return true;
       })
@@ -2065,17 +2119,20 @@
     showProgress(isRefresh ? "Refreshing…" : "Importing…", "Contacting provider…");
     return Xtream.fetchLibrary(baseClean, username, password)
       .then(function (res) {
-        setProgressStatus("Importing items…");
         if (!res.items.length) {
           hideProgress();
           toast("Provider returned no playable items.", "err");
           return false;
         }
-        var c = mergeIntoLibrary(res.items);
-        hideProgress();
-        toast("Xtream: Added " + c.added + " · Updated " + c.updated + " · Duplicates skipped " + c.skipped, "ok");
-        if (isRefresh && App && App.render) App.render();
-        return true;
+        setProgressStatus("Importing items…");
+        return mergeIntoLibraryAsync(res.items, function (pct) {
+          setProgressStatus("Importing items… " + pct + "%");
+        }).then(function (c) {
+          hideProgress();
+          toast("Xtream: Added " + c.added + " · Updated " + c.updated + " · Duplicates skipped " + c.skipped, "ok");
+          if (isRefresh && App && App.render) App.render();
+          return true;
+        });
       })
       .catch(function (err) {
         hideProgress();
@@ -2595,6 +2652,7 @@
     importFromUrl: importFromUrl,
     refreshSources: refreshSources,
     mergeIntoLibrary: mergeIntoLibrary,
+    setProgressStatus: setProgressStatus,
     confirmModal: confirmModal,
     closeModal: closeModal,
     modalOpen: modalOpen,

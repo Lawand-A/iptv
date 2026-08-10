@@ -278,7 +278,7 @@
           .then(function (info) {
             return seriesInfoToEpisodes(info, s, base, user, pass, catMap);
           });
-      }, 5).then(function (episodeGroups) {
+      }, 10).then(function (episodeGroups) {
         var episodes = [];
         episodeGroups.forEach(function (eps) {
           if (Array.isArray(eps)) episodes = episodes.concat(eps);
@@ -325,16 +325,21 @@
   function fetchM3u(base, user, pass) {
     return fetchText(m3uUrl(base, user, pass)).then(function (text) {
       if (!global.M3UParser) throw new Error("M3U parser unavailable.");
-      var res = M3UParser.parse(text);
-      var items = (res.items || []).map(function (it) { return enrichM3uItem(it, base, user, pass); });
-      var counts = { live: 0, vod: 0, series: 0, episodes: 0 };
-      items.forEach(function (it) {
-        if (it.live) counts.live++;
-        else if (it.type === "episode") counts.episodes++;
-        else if (it.type === "series") counts.series++;
-        else counts.vod++;
+      /* Parse asynchronously in chunks so a huge provider export never freezes
+         the UI; surface progress through the import overlay when visible. */
+      return M3UParser.parseAsync(text, function (pct) {
+        if (global.UI && UI.setProgressStatus) UI.setProgressStatus("Parsing provider playlist… " + pct + "%");
+      }).then(function (res) {
+        var items = (res.items || []).map(function (it) { return enrichM3uItem(it, base, user, pass); });
+        var counts = { live: 0, vod: 0, series: 0, episodes: 0 };
+        items.forEach(function (it) {
+          if (it.live) counts.live++;
+          else if (it.type === "episode") counts.episodes++;
+          else if (it.type === "series") counts.series++;
+          else counts.vod++;
+        });
+        return { items: items, counts: counts, base: base, viaM3u: true };
       });
-      return { items: items, counts: counts, base: base, viaM3u: true };
     });
   }
 

@@ -173,7 +173,8 @@
 
   function makeItem(entry) {
     var title = entry.title || filenameTitle(entry.source);
-    var series = matchSeries(title) || matchSeries(entry.attrs["tvg-name"]);
+    var series = matchSeries(title);
+    if (!series && entry.attrs["tvg-name"]) series = matchSeries(entry.attrs["tvg-name"]);
     var tvgType = String(entry.attrs["tvg-type"] || "").toLowerCase();
 
     var item = {
@@ -228,128 +229,173 @@
     return Math.abs(h).toString(36);
   }
 
-  /* Main entry point. Accepts playlist text, returns { items, errors } */
-  function parse(text) {
-    var items = [];
-    var errors = [];
-    if (!text || !text.trim()) {
-      return { items: [], errors: ["The file is empty."], sourceTypeCount: { direct: 0, embed: 0 } };
+  /* -------- parse core -------- */
+
+  /* Shared parse state. Driven line-by-line by the synchronous parse() or the
+     yielding parseAsync(), so both produce byte-identical results. */
+  function createParseState(text) {
+    return {
+      lines: String(text).split(/\r?\n/),
+      items: [],
+      errors: [],
+      sawHeader: false,
+      pending: null,
+      afterInf: false
+    };
+  }
+
+  function flushPending(state) {
+    if (state.pending && state.pending.source) {
+      state.items.push(state.pending);
+    }
+    state.pending = null;
+    state.afterInf = false;
+  }
+
+  function processLine(state, line, lineNo) {
+    if (!line) return;
+
+    if (line === "#EXTM3U") { state.sawHeader = true; return; }
+
+    if (/^#EXTINF:/i.test(line)) {
+      flushPending(state);
+      var parsed = parseInfLine(line);
+      state.pending = {
+        id: null,
+        attrs: parsed.attrs,
+        title: parsed.title,
+        mediaType: "direct",
+        source: "",
+        group: "",
+        addedAt: null
+      };
+      state.afterInf = true;
+      return;
     }
 
-    var lines = String(text).split(/\r?\n/);
-    var sawHeader = false;
-    var pending = null;
-    var afterInf = false;
-
-    function flush() {
-      if (pending && pending.source) {
-        items.push(pending);
-      }
-      pending = null;
-      afterInf = false;
+    var gm = GROUP_RE.exec(line);
+    if (gm) {
+      if (state.pending) state.pending.group = gm[1].trim();
+      return;
     }
 
-    for (var i = 0; i < lines.length; i++) {
-      var line = lines[i].trim();
-      if (!line) continue;
-
-      if (line === "#EXTM3U") { sawHeader = true; continue; }
-
-      if (/^#EXTINF:/i.test(line)) {
-        flush();
-        var parsed = parseInfLine(line);
-        pending = {
-          id: null,
-          attrs: parsed.attrs,
-          title: parsed.title,
-          mediaType: "direct",
-          source: "",
-          group: "",
-          addedAt: null
-        };
-        afterInf = true;
-        continue;
+    if (line === "#EMBED#") {
+      if (state.pending && state.pending.attrs[EMBED_ATTR]) {
+        state.pending.source = normalizeEmbedSource(decodeEmbed(state.pending.attrs[EMBED_ATTR]));
+        state.pending.mediaType = "embed";
+        state.pending.id = "auto-" + stableId(state.pending.source + "|" + (state.pending.title || ""));
+        state.pending.addedAt = Date.now();
+        flushPending(state);
       }
-
-      if (GROUP_RE.test(line)) {
-        if (pending) pending.group = GROUP_RE.exec(line)[1].trim();
-        continue;
-      }
-
-      if (line === "#EMBED#") {
-        if (pending && pending.attrs[EMBED_ATTR]) {
-          pending.source = normalizeEmbedSource(decodeEmbed(pending.attrs[EMBED_ATTR]));
-          pending.mediaType = "embed";
-          pending.id = "auto-" + stableId(pending.source + "|" + (pending.title || ""));
-          pending.addedAt = Date.now();
-          flush();
-        }
-        continue;
-      }
-
-      if (/^#EXT(?:VLC|CODEC|URL|TARGET|COMMENT|NOTE|SERVICE)/i.test(line)) {
-        continue;
-      }
-
-      if (/^#/.test(line)) {
-        if (afterInf && pending && !pending.source) { /* skip unknown headers between EXTINF and source */ }
-        continue;
-      }
-
-      /* data line (URL or embed) */
-      if (pending) {
-        var src = line;
-        var isEmbedAttr = pending.attrs && (pending.attrs[EMBED_ATTR] || pending.attrs["media-type"] === "embed");
-        if (isEmbedAttr && pending.attrs[EMBED_ATTR]) {
-          src = decodeEmbed(pending.attrs[EMBED_ATTR]);
-        }
-        pending.mediaType = pending.attrs["media-type"] === "embed" || !!pending.attrs[EMBED_ATTR]
-          ? "embed"
-          : detectMediaType(src);
-        if (pending.mediaType === "embed") {
-          src = normalizeEmbedSource(src);
-        }
-        pending.source = src;
-        pending.id = "auto-" + stableId(src + "|" + (pending.title || ""));
-        pending.addedAt = Date.now();
-        flush();
-      } else {
-        /* bare entry without EXTINF — accept only plausible sources */
-        if (!looksLikeSource(line)) {
-          errors.push("Skipped line " + (i + 1) + ": \"" + line.slice(0, 40) + "\" is not a valid entry.");
-          continue;
-        }
-        var type = detectMediaType(line);
-        var bsrc = line;
-        if (type === "embed") {
-          bsrc = normalizeEmbedSource(bsrc);
-        }
-        items.push({
-          id: "auto-" + stableId(bsrc),
-          attrs: {},
-          title: filenameTitle(line),
-          mediaType: type,
-          source: bsrc,
-          group: "",
-          addedAt: Date.now()
-        });
-      }
-    }
-    flush();
-
-    if (!sawHeader && items.length === 0) {
-      errors.push("No valid M3U entries found in this file.");
+      return;
     }
 
-    var itemsOut = items.map(makeItem);
+    if (/^#EXT(?:VLC|CODEC|URL|TARGET|COMMENT|NOTE|SERVICE)/i.test(line)) {
+      return;
+    }
+
+    if (/^#/.test(line)) {
+      /* unknown header between EXTINF and source — keep pending */
+      return;
+    }
+
+    /* data line (URL or embed) */
+    if (state.pending) {
+      var src = line;
+      var isEmbedAttr = state.pending.attrs && (state.pending.attrs[EMBED_ATTR] || state.pending.attrs["media-type"] === "embed");
+      if (isEmbedAttr && state.pending.attrs[EMBED_ATTR]) {
+        src = decodeEmbed(state.pending.attrs[EMBED_ATTR]);
+      }
+      state.pending.mediaType = state.pending.attrs["media-type"] === "embed" || !!state.pending.attrs[EMBED_ATTR]
+        ? "embed"
+        : detectMediaType(src);
+      if (state.pending.mediaType === "embed") {
+        src = normalizeEmbedSource(src);
+      }
+      state.pending.source = src;
+      state.pending.id = "auto-" + stableId(src + "|" + (state.pending.title || ""));
+      state.pending.addedAt = Date.now();
+      flushPending(state);
+    } else {
+      /* bare entry without EXTINF — accept only plausible sources */
+      if (!looksLikeSource(line)) {
+        state.errors.push("Skipped line " + (lineNo + 1) + ": \"" + line.slice(0, 40) + "\" is not a valid entry.");
+        return;
+      }
+      var type = detectMediaType(line);
+      var bsrc = line;
+      if (type === "embed") {
+        bsrc = normalizeEmbedSource(bsrc);
+      }
+      state.items.push({
+        id: "auto-" + stableId(bsrc),
+        attrs: {},
+        title: filenameTitle(line),
+        mediaType: type,
+        source: bsrc,
+        group: "",
+        addedAt: Date.now()
+      });
+    }
+  }
+
+  function finishParse(state) {
+    flushPending(state);
+
+    if (!state.sawHeader && state.items.length === 0) {
+      state.errors.push("No valid M3U entries found in this file.");
+    }
+
+    var itemsOut = state.items.map(makeItem);
     var counts = { direct: 0, embed: 0 };
     itemsOut.forEach(function (it) {
       if (it.mediaType === "embed") counts.embed++; else counts.direct++;
     });
-    if (itemsOut.length === 0 && errors.length === 0) {
-      errors.push("No playable entries were found.");
+    if (itemsOut.length === 0 && state.errors.length === 0) {
+      state.errors.push("No playable entries were found.");
     }
-    return { items: itemsOut, errors: errors, sourceTypeCount: counts, sawHeader: sawHeader };
+    return { items: itemsOut, errors: state.errors, sourceTypeCount: counts, sawHeader: state.sawHeader };
+  }
+
+  var EMPTY_RESULT = { items: [], errors: ["The file is empty."], sourceTypeCount: { direct: 0, embed: 0 } };
+
+  /* Main entry point. Accepts playlist text, returns { items, errors }.
+     Runs synchronously — use parseAsync for large playlists so the page
+     stays responsive and can show progress while a big file is imported. */
+  function parse(text) {
+    if (!text || !text.trim()) return EMPTY_RESULT;
+    var state = createParseState(text);
+    var lines = state.lines;
+    for (var i = 0; i < lines.length; i++) {
+      processLine(state, lines[i].trim(), i);
+    }
+    return finishParse(state);
+  }
+
+  /* Like parse, but processes the text in chunks and yields to the browser
+     between chunks so huge imports never freeze the UI. onProgress(percent)
+     is called after every chunk. Resolves with the same shape as parse(). */
+  function parseAsync(text, onProgress) {
+    return new Promise(function (resolve) {
+      if (!text || !text.trim()) { resolve(EMPTY_RESULT); return; }
+      var state = createParseState(text);
+      var lines = state.lines;
+      var CHUNK = 4000;
+      var i = 0;
+      function step() {
+        var end = Math.min(i + CHUNK, lines.length);
+        for (; i < end; i++) {
+          processLine(state, lines[i].trim(), i);
+        }
+        if (onProgress) onProgress(Math.floor((i / lines.length) * 100), i, lines.length);
+        if (i < lines.length) {
+          setTimeout(step, 0);
+        } else {
+          resolve(finishParse(state));
+        }
+      }
+      step();
+    });
   }
 
   function parseInfLine(line) {
@@ -360,6 +406,7 @@
 
   global.M3UParser = {
     parse: parse,
+    parseAsync: parseAsync,
     detectMediaType: detectMediaType,
     toEmbedUrl: toEmbedUrl,
     normalizeEmbedSource: normalizeEmbedSource,
