@@ -583,7 +583,11 @@ textarea { resize: vertical; min-height: 80px; }
   overflow: hidden;
   box-shadow: var(--shadow);
   margin-top: 16px;
-  aspect-ratio: 16 / 9;
+  /* Fixed 16:9 box built with the classic padding-bottom trick so it works on
+     every browser/WebView, including smart TVs without aspect-ratio support.
+     Keeps the player from collapsing or expanding while a video is loading. */
+  height: 0;
+  padding-bottom: 56.25%;
 }
 .player-wrap .player-loader {
   position: absolute;
@@ -618,6 +622,9 @@ textarea { resize: vertical; min-height: 80px; }
   to { transform: rotate(360deg); }
 }
 .player-wrap video {
+  position: absolute;
+  top: 0;
+  left: 0;
   width: 100%;
   height: 100%;
   display: block;
@@ -861,7 +868,7 @@ textarea { resize: vertical; min-height: 80px; }
 .player-wrap:-webkit-full-screen {
   width: 100%;
   height: 100%;
-  aspect-ratio: auto;
+  padding-bottom: 0;
   border-radius: 0;
   margin-top: 0;
 }
@@ -889,7 +896,9 @@ textarea { resize: vertical; min-height: 80px; }
 }
 
 .player-wrap .embed-wrap {
-  position: relative;
+  position: absolute;
+  top: 0;
+  left: 0;
   width: 100%;
   height: 100%;
 }
@@ -904,13 +913,16 @@ textarea { resize: vertical; min-height: 80px; }
   display: block;
   border: none;
 }
-.player-wrap .embed-wrap .player-msg {
+/* Messages shown inside the player area (errors, tap hints, embed notices)
+   overlay the video instead of flowing under it, so they stay visible even
+   though .player-wrap has a zero-height content box (16:9 padding box). */
+.player-wrap .player-msg {
   position: absolute;
   left: 12px;
   right: 12px;
   bottom: 12px;
   margin: 0;
-  z-index: 2;
+  z-index: 4;
 }
 .player-head {
   display: flex;
