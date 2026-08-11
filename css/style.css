@@ -67,19 +67,6 @@ input, select, textarea {
 input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 textarea { resize: vertical; min-height: 80px; }
 
-.skip-link {
-  position: absolute;
-  left: -999px;
-  top: 8px;
-  z-index: 1000;
-  background: var(--accent);
-  color: #fff;
-  padding: 10px 16px;
-  border-radius: 8px;
-  font-weight: 700;
-}
-.skip-link:focus { left: 8px; }
-
 /* ---------- Top bar ---------- */
 .topbar {
   position: sticky;
