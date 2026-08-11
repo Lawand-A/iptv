@@ -1391,9 +1391,13 @@
     } else {
       var selector = document.createElement("div");
       selector.className = "season-selector";
-      /* If a season was passed (e.g. from Recently Watched), pre-select it. */
+      /* Prefer the season from the URL (player back / recently watched); fall
+         back to the last season watched in this series so the device/remote
+         back button (history back drops the ?season= query) still returns to
+         the season the user was on. */
       var requestedSeason = seasonQuery != null ? Number(seasonQuery) : null;
-      var activeSeason = (requestedSeason != null && seasons[requestedSeason]) ? requestedSeason : seasonNumbers[0];
+      var lastWatchedSeason = (requestedSeason != null ? requestedSeason : Store.getLastSeriesSeason(seriesId));
+      var activeSeason = (lastWatchedSeason != null && seasons[lastWatchedSeason]) ? lastWatchedSeason : seasonNumbers[0];
 
       var pills = {};
       seasonNumbers.forEach(function (n) {

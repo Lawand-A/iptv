@@ -14,7 +14,8 @@
     progress: "iptv_progress",
     watched: "iptv_watched",
     settings: "iptv_settings",
-    pins: "iptv_pins"
+    pins: "iptv_pins",
+    lastSeriesSeason: "iptv_last_series_season"
   };
 
   var DB_NAME = "iptv-app";
@@ -590,6 +591,26 @@
     return idx < 0;
   }
 
+  /* ---------- Last watched series season ---------- */
+  /* Remembers which season the user was on when they last played an episode,
+     so returning to a series page without a ?season= query (e.g. via the
+     device/remote back button) restores that season instead of season 1. */
+  function getLastSeriesSeason(seriesId) {
+    var map = read(KEYS.lastSeriesSeason, {});
+    if (!map || typeof map !== "object" || Array.isArray(map)) return null;
+    var s = map[seriesId];
+    return s == null ? null : Number(s);
+  }
+
+  function setLastSeriesSeason(seriesId, season) {
+    if (!seriesId) return;
+    var map = read(KEYS.lastSeriesSeason, {});
+    if (!map || typeof map !== "object" || Array.isArray(map)) map = {};
+    if (season == null) delete map[seriesId];
+    else map[seriesId] = Number(season);
+    write(KEYS.lastSeriesSeason, map);
+  }
+
   /* ---------- Watchlist ---------- */
   function getWatchlist() {
     var list = read(KEYS.watchlist, []);
@@ -895,6 +916,8 @@
     getPins: getPins,
     isPinned: isPinned,
     togglePin: togglePin,
+    getLastSeriesSeason: getLastSeriesSeason,
+    setLastSeriesSeason: setLastSeriesSeason,
     getHistory: getHistory,
     addToHistory: addToHistory,
     getHistoryEntry: getHistoryEntry,

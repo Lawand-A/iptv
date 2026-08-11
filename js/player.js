@@ -1168,6 +1168,12 @@
     currentId = itemId;
     currentLive = !!item.live;
 
+    /* Remember the season so a series page opened without a season query
+       (device/remote back) restores the season the user was watching. */
+    if (item.type === "episode" && item.seriesId && item.season != null) {
+      Store.setLastSeriesSeason(item.seriesId, item.season);
+    }
+
     var saved = Store.getProgressFor(itemId);
     Store.addToHistory(itemId, { position: saved.position, duration: saved.duration, progress: saved.progress });
 
