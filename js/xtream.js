@@ -317,6 +317,38 @@
   /* -------- M3U fallback (get.php) -------- */
   var DIRECT_MEDIA_RE = /\.(mp4|m4v|mkv|webm|mov|ogv|avi)(\?|#|$)/i;
 
+  /* Detect an Xtream playlist export link (get.php) and pull out the provider
+     base, username and password, so a plain URL import can also talk to the
+     provider's player_api.php endpoint. Returns null when the link is not an
+     Xtream export. */
+  function parseGetPhpUrl(url) {
+    var u = String(url || "").trim();
+    var m = /^([a-z][a-z0-9+.-]*:\/\/[^\/?#]+)\/get\.php(?:\?|#|$)/i.exec(u);
+    if (!m) return null;
+    var qIdx = u.indexOf("?");
+    var qs = qIdx >= 0 ? u.slice(qIdx + 1) : "";
+    function qv(name) {
+      var mm = new RegExp("(?:^|&)" + name + "=([^&]*)", "i").exec(qs);
+      if (!mm) return "";
+      try { return decodeURIComponent(mm[1]); } catch (e) { return mm[1]; }
+    }
+    var username = qv("username"), password = qv("password");
+    if (!username || !password) return null;
+    return { base: m[1].replace(/\/+$/, ""), username: username, password: password };
+  }
+
+  /* Best-effort fetch of the series containers only (no episodes), for merging
+     into a playlist import so the Series section is populated even when an
+     Xtream get.php export is blocked or does not include episode entries.
+     Episodes stay lazy (fetchSeriesEpisodes). Resolves to [] on any failure. */
+  function fetchSeriesContainers(base, user, pass) {
+    return fetchCategories(base, user, pass, "get_series_categories").then(function (catMap) {
+      return fetchSeries(base, user, pass, catMap).then(function (r) {
+        return r.containers || [];
+      });
+    }).catch(function () { return []; });
+  }
+
   /* The m3u_plus export uses the classic URL form (base/user/pass/id).
      Enrich those entries with alternate HLS forms and mark them live so the
      player tries them through hls.js instead of the plain <video> tag. */
@@ -435,6 +467,8 @@
     cleanBase: cleanBase,
     fetchLibrary: fetchLibrary,
     fetchSeriesEpisodes: fetchSeriesEpisodes,
+    fetchSeriesContainers: fetchSeriesContainers,
+    parseGetPhpUrl: parseGetPhpUrl,
     apiUrl: apiUrl
   };
 })(window);

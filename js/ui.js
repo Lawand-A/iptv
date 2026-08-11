@@ -2375,6 +2375,65 @@
       });
     }
 
+    /* Xtream get.php export links get special handling: many providers block
+       the get.php playlist (some accounts) or omit series from it entirely,
+       so the provider's player_api.php endpoint — which hosts live, movies
+       and series — is used to fill in the gaps. */
+    var xt = global.Xtream && Xtream.parseGetPhpUrl(url);
+    if (xt) {
+      /* Register the provider's credentials so lazily loaded series episodes
+         keep working after the import (same registry the Xtream panel uses). */
+      var st = Store.getSettings();
+      var regs2 = Object.assign({}, st.xtreamProviders || {});
+      regs2[xt.base] = { username: xt.username, password: xt.password };
+      Store.saveSettings({ xtreamProviders: regs2 });
+    }
+
+    /* Full provider library via player_api.php (get.php was blocked or empty). */
+    function xtApiImport() {
+      setProgressStatus("Playlist unavailable — importing via the provider API…");
+      return global.Xtream.fetchLibrary(xt.base, xt.username, xt.password)
+        .then(function (res) {
+          if (!res.items.length) {
+            hideProgress();
+            toast("The provider API returned no playable items.", "err");
+            return false;
+          }
+          setProgressStatus("Importing items…");
+          return applyParseResultAsync({ items: res.items, errors: [] }, isRefresh).then(function (ok) {
+            hideProgress();
+            return ok;
+          });
+        });
+    }
+
+    /* Playlist imported fine, but series may be missing — merge in the series
+       containers from the API (best-effort, deduped by series name). */
+    function xtSupplementSeries(result) {
+      setProgressStatus("Fetching series from the provider…");
+      return global.Xtream.fetchSeriesContainers(xt.base, xt.username, xt.password)
+        .then(function (containers) {
+          if (containers && containers.length) {
+            var names = {};
+            result.items.forEach(function (it) {
+              if (it.type === "episode" || it.type === "series") {
+                var n = (it.seriesName || "").toLowerCase();
+                if (n) names[n] = true;
+              }
+            });
+            var fresh = containers.filter(function (c) {
+              var n = (c.seriesName || "").toLowerCase();
+              return n && !names[n];
+            });
+            if (fresh.length) result.items = result.items.concat(fresh);
+          }
+          return applyParseResultAsync(result, isRefresh);
+        })
+        .catch(function () {
+          return applyParseResultAsync(result, isRefresh);
+        });
+    }
+
     showProgress(isRefresh ? "Refreshing…" : "Importing…", "Fetching playlist…");
     return fetchText(attempts[0], attempts.slice(1))
       .then(function (res) {
@@ -2383,7 +2442,8 @@
         return M3UParser.parseAsync(res.text, function (pct) {
           setProgressStatus("Parsing playlist… " + pct + "%");
         }).then(function (result) {
-          return applyParseResultAsync(result, isRefresh);
+          if (xt && !result.items.length) return xtApiImport();
+          return xt ? xtSupplementSeries(result) : applyParseResultAsync(result, isRefresh);
         });
       })
       .then(function () {
@@ -2391,6 +2451,15 @@
         return true;
       })
       .catch(function (err) {
+        if (xt) {
+          return xtApiImport().catch(function (err2) {
+            hideProgress();
+            toast("Could not import this Xtream link: " + ((err2 && err2.message) ? err2.message
+              : (err && err.status ? "the playlist was rejected (HTTP " + err.status + ") and the provider API also failed."
+                : "the playlist could not be fetched.")), "err");
+            return false;
+          });
+        }
         hideProgress();
         var msg = "Could not fetch the playlist from that URL. The link may be wrong or the server blocks it (CORS).";
         if (err && err.status) {
