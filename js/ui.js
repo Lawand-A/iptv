@@ -5,8 +5,6 @@
 
   var BUILD = 10;
   if (global.console) console.log("[build] ui.js v" + BUILD);
-  var versionTag = document.querySelector(".app-footer-version");
-  if (versionTag) versionTag.textContent = "StreamHub · Build " + BUILD;
 
   var page = document.getElementById("app");
   var modalRoot = document.getElementById("modalRoot");
