@@ -16,6 +16,10 @@ The app is designed to work like a lightweight Netflix-style client: poster grid
 This is a live **Demo**: http://tv.crackoverflow.com
 ![Project Image](image.png)
 
+## Mobile Devices
+- For Android you can install a Webview version of the project (StreamHub APK HERE)[https://github.com/Lawand-A/iptv/releases/download/App/app-release.ap].
+- There is no app version for IOS devices; however you still can install the project as PWA on IOS and enjoy it.
+
 ## Main views
 - **Home**: hero banner, recently watched, watchlist, movies, series, categories, and recently added rows.
 - **Movies**: searchable grid of all VOD/movie items.
