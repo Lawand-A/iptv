@@ -17,7 +17,7 @@ This is a live **Demo**: http://tv.crackoverflow.com
 ![Project Image](image.png)
 
 ## Mobile Devices
-- For Android, you can install a WebView version of the project ([StreamHub APK HERE](https://github.com)).
+- For Android, you can install a WebView version of the project ([StreamHub APK HERE](https://github.com/Lawand-A/iptv/releases/download/App/app-release.apk)).
 - There is no app version for IOS devices; however you still can install the project as PWA on IOS and enjoy it.
 
 ## Main views
