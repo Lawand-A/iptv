@@ -31,7 +31,7 @@
 
   function request(url) {
     var ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
-    var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 30000) : null;
+    var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 120000) : null;
     return new Promise(function (resolve, reject) {
       /* no-referrer: many IPTV servers reject requests that carry a website
          Referer (hotlink protection). Opening the app from file:// sent no
@@ -86,7 +86,7 @@
   /* Build a clear, actionable message for a network-level failure. */
   function describeFetchError(err, url) {
     if (err && err.name === "AbortError") {
-      return "The provider took too long to respond (timeout after 30s). Check that the server address and port are correct.";
+      return "The provider took too long to respond (timeout after 120s). Check that the server address and port are correct.";
     }
     if (err && err.http) {
       var body = err.body ? " Server says: \"" + err.body + "\"." : "";

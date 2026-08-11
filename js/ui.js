@@ -144,7 +144,7 @@
   var allFetchDoneOnce = false;
 
   /* When true, an import automatically starts the background fill. */
-  var xtSeriesAutoFill = true;
+  var xtSeriesAutoFill = false;
 
   /* Network-only fetch of a series' episodes (no merge/persist), shared by the
      lazy open path and the background fill so one place owns credentials. */
@@ -1263,12 +1263,6 @@
     }
     page.innerHTML = "";
     page.appendChild(root);
-
-    /* Populate real episode counts in the background whenever the page is
-       visited; a running fill is not restarted and a finished one is a no-op. */
-    if (!allFetchDoneOnce && Store.getSettings().xtream && Store.getSettings().xtream.base && list.some(function (s) { return !s.episodes.length; })) {
-      fetchAllSeriesEpisodes(list);
-    }
   }
 
   /* ---------- SERIES DETAILS ---------- */
@@ -2353,7 +2347,7 @@
 
     function fetchText(u, rest) {
       var ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
-      var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 60000) : null;
+      var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 120000) : null;
       var opts = { referrerPolicy: "no-referrer" };
       if (ctrl) opts.signal = ctrl.signal;
       return fetch(u, opts).then(function (res) {

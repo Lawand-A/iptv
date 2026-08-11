@@ -7,7 +7,11 @@
   var EXTINF_RE = /^#EXTINF:(?:-?\d+|[\w\-.+]+)\s*(.*)$/i;
   var ATTR_RE = /([a-z0-9_-]+)\s*=\s*"([^"]*)"/gi;
   var GROUP_RE = /^#EXTGRP:(.*)$/;
-  var SEASON_EP_RE = /(?:^|[\s._-])(S(\d{1,2})[\s._-]*E(\d{1,3}))\b|(?:^|[\s._-])(Season\s+(\d{1,2})[\s._-]+Episode\s+(\d{1,3}))\b|(?:^|[\s._-])(S(\d{1,2})\s+E(\d{1,3}))\b/i;
+  /* Season/episode patterns: "S01E02", "S01 E02", "Season 1 Episode 2".
+     The leading char may be any punctuation/separator (so "Show (S01E01)",
+     "Show: S01E01", "Show_S01E01" all match) and the episode number must not
+     be followed by a digit (so "S01E0012" is never misread). */
+  var SEASON_EP_RE = /(?:^|[\W_])(?:S(\d{1,2})[\s._-]*E(\d{1,3}))(?![0-9])|(?:^|[\W_])(?:Season\s+(\d{1,2})[\s._-]+Episode\s+(\d{1,3}))(?![0-9])/i;
   var EMBED_ATTR = "tvg-embed";
 
   /* Known providers that must play inside an <iframe>.
@@ -137,9 +141,8 @@
     if (!m) return null;
 
     var season = null, episode = null, matched = null;
-    if (m[2] !== undefined) { season = parseInt(m[2], 10); episode = parseInt(m[3], 10); matched = m[0]; }
-    else if (m[5] !== undefined) { season = parseInt(m[5], 10); episode = parseInt(m[6], 10); matched = m[0]; }
-    else if (m[8] !== undefined) { season = parseInt(m[8], 10); episode = parseInt(m[9], 10); matched = m[0]; }
+    if (m[1] !== undefined) { season = parseInt(m[1], 10); episode = parseInt(m[2], 10); matched = m[0]; }
+    else if (m[3] !== undefined) { season = parseInt(m[3], 10); episode = parseInt(m[4], 10); matched = m[0]; }
     if (season === null || episode === null) return null;
 
     var seriesName = text.slice(0, m.index).replace(/[\s.:\-_]+$/g, "").trim();
@@ -175,6 +178,13 @@
     var title = entry.title || filenameTitle(entry.source);
     var series = matchSeries(title);
     if (!series && entry.attrs["tvg-name"]) series = matchSeries(entry.attrs["tvg-name"]);
+    /* When the title carries the season/episode numbers but no show name
+       (e.g. "S01E01 - Pilot"), take the name from the group-title so such
+       entries are still detected as episodes of that series. */
+    if (series && !series.seriesName) {
+      var g = entry.attrs["group-title"] || entry.group || "";
+      if (g) series.seriesName = g;
+    }
     var tvgType = String(entry.attrs["tvg-type"] || "").toLowerCase();
 
     var item = {
