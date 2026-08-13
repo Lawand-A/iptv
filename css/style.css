@@ -1174,15 +1174,23 @@ textarea { resize: vertical; min-height: 80px; }
     grid-template-columns: repeat(4, 1fr);
     grid-template-areas:
       "import xtream export add"
+      "opts   opts   opts   opts"
       "edit   delete maint  maint";
   }
   .panel-import { grid-area: import; }
+  .panel-importopts { grid-area: opts; }
   .panel-xtream { grid-area: xtream; }
   .panel-export { grid-area: export; }
   .panel-add { grid-area: add; }
   .panel-edit { grid-area: edit; }
   .panel-delete { grid-area: delete; }
   .panel-maint { grid-area: maint; }
+  .import-options {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 14px;
+    max-width: 880px;
+    margin: 0 auto;
+  }
   .maint-actions { flex-wrap: nowrap; }
   .maint-actions .btn { flex: 1 1 0; padding: 12px 10px; font-size: 14px; white-space: nowrap; }
 }
@@ -1193,6 +1201,113 @@ textarea { resize: vertical; min-height: 80px; }
   word-break: break-all;
 }
 .picker-search { margin-bottom: 10px; }
+
+/* ---------- Import Options toggles ---------- */
+.import-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+.import-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--bg-elev2);
+  border: 1px solid #2b3550;
+  color: var(--text);
+  font-weight: 700;
+  font-size: 15px;
+  text-align: left;
+  transition: border-color .2s, background .2s;
+}
+.import-toggle:hover { border-color: #3d4a6e; }
+.import-toggle.on { border-color: #26664a; background: rgba(38, 102, 74, .10); }
+.import-toggle-label { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.import-toggle-label small {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-faint);
+}
+.import-toggle .switch {
+  position: relative;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--bg-elev3);
+  transition: background .2s;
+}
+.import-toggle .switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: transform .2s, background .2s;
+}
+.import-toggle.on .switch { background: rgba(38, 102, 74, .30); }
+.import-toggle.on .switch::after {
+  transform: translateX(20px);
+  background: #2f7a57;
+}
+
+/* Standalone switch (used next to the regex field). */
+.switch-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--bg-elev2);
+  border: 1px solid #2c3752;
+  transition: border-color .2s, background .2s;
+}
+.switch-btn:hover { border-color: #3d4a6e; }
+.switch-btn .switch {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--bg-elev3);
+  transition: background .2s;
+}
+.switch-btn .switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: transform .2s, background .2s;
+}
+.switch-btn.on { border-color: #26664a; background: rgba(38, 102, 74, .10); }
+.switch-btn.on .switch { background: rgba(38, 102, 74, .30); }
+.switch-btn.on .switch::after {
+  transform: translateX(20px);
+  background: #2f7a57;
+}
+
+/* Advanced regex skip row inside the Import Options panel. */
+.import-regex-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  margin-top: 16px;
+}
+.import-regex-row .import-regex-input { flex: 0 1 50%; min-width: 0; }
+.import-regex-input:disabled { opacity: .55; }
+.import-regex-input.invalid { border-color: var(--err); }
+.import-regex-input.invalid:focus { border-color: var(--err); }
 
 /* ---------- Empty states ---------- */
 .empty {
