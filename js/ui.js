@@ -1883,11 +1883,57 @@
       var grid = document.createElement("div");
       grid.className = "grid";
       items.slice(0, 30).forEach(function (it) {
+        var wrap = document.createElement("div");
+        wrap.className = "history-card-wrap";
+        var removeBtn = document.createElement("button");
+        removeBtn.className = "history-remove focusable";
+        removeBtn.type = "button";
+        removeBtn.setAttribute("aria-label", "Remove from history");
+        removeBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="display:block;pointer-events:none"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+        /* Inline styles with !important to guarantee placement even if a cached
+           stylesheet from an older build is still loaded by the browser. */
+        removeBtn.style.setProperty("position", "absolute", "important");
+        removeBtn.style.setProperty("top", "8px", "important");
+        removeBtn.style.setProperty("right", "8px", "important");
+        removeBtn.style.setProperty("left", "auto", "important");
+        removeBtn.style.setProperty("z-index", "10", "important");
+        removeBtn.style.setProperty("width", "28px", "important");
+        removeBtn.style.setProperty("height", "28px", "important");
+        removeBtn.style.setProperty("border-radius", "50%", "important");
+        removeBtn.style.setProperty("display", "flex", "important");
+        removeBtn.style.setProperty("align-items", "center", "important");
+        removeBtn.style.setProperty("justify-content", "center", "important");
+        removeBtn.style.setProperty("background", "rgba(0,0,0,.72)", "important");
+        removeBtn.style.setProperty("color", "#fff", "important");
+        removeBtn.style.setProperty("font-size", "20px", "important");
+        removeBtn.style.setProperty("font-size", "0", "important");
+        removeBtn.style.setProperty("font-weight", "700", "important");
+        removeBtn.style.setProperty("line-height", "1", "important");
+        removeBtn.style.setProperty("padding", "0", "important");
+        removeBtn.style.setProperty("border", "1px solid rgba(255,255,255,.18)", "important");
+        removeBtn.addEventListener("click", function (e) {
+          e.stopPropagation();
+          Store.removeFromHistory(it.id);
+          Store.clearProgressFor(it.id);
+          renderHistory();
+          toast("Removed from history", "ok");
+        });
+        wrap.appendChild(removeBtn);
+
         if (it.type === "episode") {
           var s = getSeries(it.seriesId || "series-" + M3UParser.stableId(it.seriesName || it.title));
-          if (s) { grid.appendChild(seriesCard(s.seriesId, s.seriesName, s.poster, s.episodes.length)); return; }
+          if (s) {
+            var sc = seriesCard(s.seriesId, s.seriesName, s.poster, s.episodes.length);
+            sc.dataset.historyId = it.id;
+            wrap.appendChild(sc);
+            grid.appendChild(wrap);
+            return;
+          }
         }
-        grid.appendChild(card(it));
+        var c = card(it);
+        c.dataset.historyId = it.id;
+        wrap.appendChild(c);
+        grid.appendChild(wrap);
       });
       root.appendChild(grid);
     }

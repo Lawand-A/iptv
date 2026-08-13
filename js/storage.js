@@ -684,6 +684,15 @@
   function getHistoryEntry(id) {
     return read(KEYS.history, []).find(function (h) { return h.id === id; }) || null;
   }
+  function removeFromHistory(id) {
+    var h = read(KEYS.history, []);
+    if (!Array.isArray(h)) return;
+    var idx = h.findIndex(function (x) { return x.id === id; });
+    if (idx >= 0) {
+      h.splice(idx, 1);
+      write(KEYS.history, h);
+    }
+  }
   function clearHistory() { write(KEYS.history, []); }
 
   /* ---------- Progress ---------- */
@@ -942,6 +951,7 @@
     getHistory: getHistory,
     addToHistory: addToHistory,
     getHistoryEntry: getHistoryEntry,
+    removeFromHistory: removeFromHistory,
     clearHistory: clearHistory,
     getProgress: getProgress,
     getProgressFor: getProgressFor,
