@@ -22,11 +22,16 @@
   --err: #ff4d5e;
 }
 
-* { box-sizing: border-box; margin: 0; padding: 0; }
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+}
 
 [hidden] { display: none !important; }
 
-html, body { height: 100%; }
+html, body { height: 100%; -webkit-tap-highlight-color: transparent; }
 
 body {
   background: var(--bg);
@@ -50,6 +55,8 @@ button {
   background: none;
   border: none;
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  tap-highlight-color: transparent;
 }
 
 img { display: block; }
@@ -288,6 +295,7 @@ textarea { resize: vertical; min-height: 80px; }
   outline: none;
   cursor: pointer;
   transition: transform .18s ease, box-shadow .18s ease;
+  -webkit-tap-highlight-color: transparent;
 }
 .card:hover { transform: translateY(-4px); }
 
@@ -415,7 +423,12 @@ textarea { resize: vertical; min-height: 80px; }
 }
 
 /* ---------- Focus ring (Smart TV / keyboard) ---------- */
-.focusable { outline: none; position: relative; }
+.focusable {
+  outline: none;
+  position: relative;
+  -webkit-tap-highlight-color: transparent;
+  tap-highlight-color: transparent;
+}
 .focusable:focus-visible,
 .focusable.focused,
 .spatial-focus {
@@ -424,6 +437,17 @@ textarea { resize: vertical; min-height: 80px; }
   box-shadow: 0 0 0 6px rgba(255,255,255,.18) !important;
 }
 .spatial-focus { z-index: 5; }
+
+/* On touch/pointer devices the spatial focus ring and native :focus-visible
+   outlines must be completely hidden, even if the browser heuristic or a
+   direct .focus() call would otherwise show one. The data-input-mode attribute
+   is set by navigation.js on first load. */
+[data-input-mode="pointer"] .focusable:focus-visible,
+[data-input-mode="pointer"] .focusable.focused,
+[data-input-mode="pointer"] .spatial-focus {
+  outline: none !important;
+  box-shadow: none !important;
+}
 
 /* ---------- Details / series pages ---------- */
 .detail-backdrop { min-height: 320px; }
