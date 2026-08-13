@@ -1314,7 +1314,8 @@
     var el = video || wrap.querySelector("iframe");
     if (el) {
       el.classList.add("focusable");
-      el.focus();
+      if (global.Nav && Nav.focusEl) Nav.focusEl(el);
+      else el.focus();
     }
   }
 

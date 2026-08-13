@@ -1152,7 +1152,10 @@
         var w = wrapFor(it.id);
         if (w) {
           var np = w.querySelector(".live-pin");
-          if (np) { try { np.focus(); } catch (err) { /* ignore */ } }
+          if (np) {
+            try { np.focus(); } catch (err) { /* ignore */ }
+            if (global.Nav && Nav.markFocused) Nav.markFocused(np);
+          }
         }
       });
       wrap.appendChild(pin);
@@ -2055,13 +2058,20 @@
       debounce = setTimeout(function () { run(input.value); }, 120);
     });
     input.addEventListener("keydown", function (e) {
-      if (Nav.keyName(e) === "enter") { run(input.value); input.focus(); }
+      if (Nav.keyName(e) === "enter") {
+        run(input.value);
+        input.focus();
+        if (global.Nav && Nav.markFocused) Nav.markFocused(input);
+      }
     });
 
     page.innerHTML = "";
     page.appendChild(root);
     run(initialQ || "");
-    setTimeout(function () { input.focus(); }, 30);
+    setTimeout(function () {
+      input.focus();
+      if (global.Nav && Nav.markFocused) Nav.markFocused(input);
+    }, 30);
   }
 
   /* ---------- SETTINGS / LIBRARY ---------- */
@@ -2189,7 +2199,10 @@
       toast(regexOn
         ? (p ? "Regex filtering enabled" : "Regex filtering enabled — type a pattern to filter")
         : "Regex filtering disabled", "ok");
-      if (regexOn && !p) { try { regexInput.focus(); } catch (e) { /* ignore */ } }
+      if (regexOn && !p) {
+        try { regexInput.focus(); } catch (e) { /* ignore */ }
+        if (global.Nav && Nav.markFocused) Nav.markFocused(regexInput);
+      }
       return true;
     }, "Enable regex filtering");
     regexToggle.classList.add("import-regex-toggle");
@@ -3244,7 +3257,10 @@
     modalRoot.hidden = false;
     setTimeout(function () {
       var f = defaultFocus || modalEl.querySelector(".focusable");
-      if (f) { try { f.focus(); } catch (e) { /* ignore */ } }
+      if (f) {
+        try { f.focus(); } catch (e) { /* ignore */ }
+        if (global.Nav && Nav.markFocused) Nav.markFocused(f);
+      }
     }, 30);
   }
   function closeModal() {
@@ -3252,6 +3268,7 @@
     modalRoot.hidden = true;
     if (lastFocusBeforeModal && document.body.contains(lastFocusBeforeModal)) {
       try { lastFocusBeforeModal.focus(); } catch (e) { /* ignore */ }
+      if (global.Nav && Nav.markFocused) Nav.markFocused(lastFocusBeforeModal);
     }
     lastFocusBeforeModal = null;
   }

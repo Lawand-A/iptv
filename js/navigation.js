@@ -18,7 +18,11 @@
   "use strict";
 
   var lastFocused = null;
-  var usedKeyboard = false;
+  /* inputMode drives focus-ring visibility and auto-focus behaviour.
+     "keyboard" = the user is navigating with a keyboard or TV remote;
+     "pointer"  = the user is using touch or mouse. Focus rings are hidden
+     and auto-focus is skipped. */
+  var inputMode = "pointer";
 
   var KEY_ALIASES = {
     ArrowLeft: "left", Left: "left",
@@ -28,7 +32,8 @@
     Enter: "enter", Select: "enter", OK: "enter", ok: "enter",
     " ": "space", Spacebar: "space",
     Escape: "escape",
-    Backspace: "backspace", Back: "backspace"
+    Backspace: "backspace", Back: "backspace",
+    Tab: "tab"
   };
   var KEY_CODES = {
     37: "left", 38: "up", 39: "right", 40: "down",
@@ -53,9 +58,16 @@
   function isTV() {
     var ua = "";
     try { ua = (global.navigator && global.navigator.userAgent) || ""; } catch (e) { /* ignore */ }
-    return /(?:Tizen|Web0S|webOS|NetCast|SMART-?TV|Smarttv|Viera|Vestel|Hisense|Xbox|PlayStation|CrKey|GoogleTV|Android.{0,40}\bTV|Opera.{0,10}TV)/i.test(ua);
+    return /(?:Tizen|Web0S|webOS|NetCast|SMART-?TV|Smarttv|Viera|Vestel|Hisense|SonyBRAVIA|BRAVIA|Xbox|PlayStation|CrKey|GoogleTV|AFT[A-Z]|Chromecast|Android.{0,60}\b(?:TV|Box|Stick|BRAVIA|AFT[A-Z])|Opera.{0,10}TV)/i.test(ua);
   }
   var tvMode = isTV();
+
+  function hasTouch() {
+    try {
+      return ("ontouchstart" in global) || !!(global.navigator && global.navigator.maxTouchPoints > 0);
+    } catch (e) { return false; }
+  }
+  var touchDevice = hasTouch();
 
   function isVisible(el) {
     if (!el || el.hidden) return false;
@@ -91,7 +103,7 @@
   }
 
   function move(dir) {
-    usedKeyboard = true;
+    setInputMode("keyboard");
     var current = currentFocusable();
     if (!current) {
       focusFirstContent();
@@ -211,13 +223,18 @@
     return true;
   }
 
+  function trackFocus(el) {
+    if (el && isFocusable(el)) lastFocused = el;
+  }
+
   function markFocused(el) {
+    trackFocus(el);
+    if (!el) return;
     document.querySelectorAll(".spatial-focus").forEach(function (n) {
       n.classList.remove("spatial-focus");
     });
-    if (el) {
+    if (inputMode === "keyboard") {
       el.classList.add("spatial-focus");
-      lastFocused = el;
     }
   }
 
@@ -263,7 +280,7 @@
         return;
       }
       e.preventDefault();
-      usedKeyboard = true;
+      setInputMode("keyboard");
       if (Player.isActive()) Player.escape();
       else global.App && App.goBack();
       return;
@@ -288,25 +305,27 @@
     /* Do not steal arrows from the media element (native seek/volume). */
     if (e.target && (e.target.tagName === "VIDEO" || e.target.tagName === "IFRAME")) return;
 
-    if (key === "left" || key === "right" || key === "up" || key === "down") {
+    if (key === "left" || key === "right" || key === "up" || key === "down" || key === "tab") {
+      setInputMode("keyboard");
+      if (key === "tab") return; // let the browser handle Tab order
       e.preventDefault();
       move(key);
     } else if (key === "enter" || key === "space") {
       var cur = document.activeElement;
       if (cur && isFocusable(cur)) {
         e.preventDefault();
-        usedKeyboard = true;
+        setInputMode("keyboard");
         cur.click();
       }
     }
   }
 
   function restoreFocus() {
-    if (lastFocused && document.body.contains(lastFocused)) {
+    if (lastFocused && document.body.contains(lastFocused) && isFocusable(lastFocused) && isVisible(lastFocused)) {
       focusEl(lastFocused);
-    } else {
-      focusFirstContent();
+      return true;
     }
+    return focusFirstContent();
   }
 
   /* Call after any page render: re-focus content when the user navigates by
@@ -317,17 +336,55 @@
   var FOCUS_ATTEMPTS = 8;
   var FOCUS_DELAY = 80;
   function afterRender() {
-    if (!usedKeyboard && !tvMode) return;
-    retryFirstFocus(0);
+    if (inputMode !== "keyboard") return;
+    if (global.UI && UI.modalOpen && UI.modalOpen()) return;
+    retryRestoreFocus(0);
   }
-  function retryFirstFocus(attempt) {
-    if (focusFirstContent()) return;
+  function retryRestoreFocus(attempt) {
+    if (restoreFocus()) return;
     if (attempt >= FOCUS_ATTEMPTS) return;
-    setTimeout(function () { retryFirstFocus(attempt + 1); }, FOCUS_DELAY);
+    setTimeout(function () { retryRestoreFocus(attempt + 1); }, FOCUS_DELAY);
+  }
+
+  function setInputMode(mode) {
+    if (inputMode === mode) return;
+    inputMode = mode;
+    document.documentElement.setAttribute("data-input-mode", mode);
+    if (mode === "pointer") {
+      document.querySelectorAll(".spatial-focus").forEach(function (n) {
+        n.classList.remove("spatial-focus");
+      });
+      var c = document.activeElement;
+      if (c && c !== document.body && c.classList && c.classList.contains("focusable") && !isTyping(c)) {
+        try { c.blur(); } catch (e) { /* ignore */ }
+      }
+    }
+  }
+
+  function onPointerDown(e) {
+    setInputMode("pointer");
+    var el = e.target.closest ? e.target.closest(".focusable") : null;
+    if (el) trackFocus(el);
+  }
+
+  function onFocusIn(e) {
+    trackFocus(e.target);
+    if (inputMode === "keyboard") markFocused(e.target);
   }
 
   function init() {
+    /* Default to pointer (no focus ring). Switch to keyboard mode on Smart TVs
+       where the remote is the only input, or whenever the user presses a key. */
+    if (tvMode) inputMode = "keyboard";
+    document.documentElement.setAttribute("data-input-mode", inputMode);
+
     document.addEventListener("keydown", onKey, true);
+    document.addEventListener("pointerdown", onPointerDown, true);
+    if (!("onpointerdown" in document)) {
+      document.addEventListener("touchstart", onPointerDown, true);
+      document.addEventListener("mousedown", onPointerDown, true);
+    }
+    document.addEventListener("focusin", onFocusIn, true);
   }
 
   global.Nav = {
@@ -335,6 +392,9 @@
     restoreFocus: restoreFocus,
     afterRender: afterRender,
     focusFirst: focusFirstContent,
+    focusEl: focusEl,
+    markFocused: markFocused,
+    setInputMode: setInputMode,
     keyName: keyName
   };
 })(window);
