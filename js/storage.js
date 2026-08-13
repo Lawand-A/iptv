@@ -735,6 +735,27 @@
     write(KEYS.settings, Object.assign(getSettings(), patch));
   }
 
+  /* ---------- Import options ----------
+     Which content types are imported from playlists/providers. Live, Movies
+     and Series default to on; Adult +18 defaults to off. A regex (off by
+     default) can be used to skip any content whose text matches it. */
+  function getImportOptions() {
+    var o = getSettings().importOptions || {};
+    return {
+      live: o.live !== false,
+      movies: o.movies !== false,
+      series: o.series !== false,
+      adult: !!o.adult,
+      regexEnabled: !!o.regexEnabled,
+      regex: o.regex || ""
+    };
+  }
+  function setImportOption(key, value) {
+    var o = Object.assign({}, getSettings().importOptions || {});
+    o[key] = typeof value === "string" ? value : !!value;
+    saveSettings({ importOptions: o });
+  }
+
   /* ---------- Library wide ops ---------- */
   function clearLibrary() {
     itemsCache = [];
@@ -932,6 +953,8 @@
     markUnwatched: markUnwatched,
     getSettings: getSettings,
     saveSettings: saveSettings,
+    getImportOptions: getImportOptions,
+    setImportOption: setImportOption,
     clearLibrary: clearLibrary,
     resetAll: resetAll
   };

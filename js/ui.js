@@ -99,6 +99,73 @@
     return false;
   }
 
+  /* Adult content is detected by its category/group or title wording (IPTV
+     providers usually label these channels plainly). The +18 Import Option
+     gates these — they are only imported when explicitly enabled. */
+  var ADULT_RE = /(?:^|[^a-z0-9])(?:adult|xxx|18\+|18plus|nsfw|erotic|erotik|explicit|onlyfans|porntv|pornhub|hardcore|playboy|bangbros|brazzers|sexvideos|pornstar)(?:$|[^a-z0-9])/i;
+
+  function isAdultItem(it) {
+    if (!it) return false;
+    var hay = String(it.group || "") + " " + String(it.title || "") + " " + String(it.tvgName || "");
+    return ADULT_RE.test(hay);
+  }
+
+  /* Should an item be imported given the current Import Options?
+     Episodes and series containers belong to the "Series" toggle, live
+     channels to "Live", everything else to "Movies". Adult content is gated
+     by its own toggle first, so it never leaks through another type. */
+  function shouldImportItem(it) {
+    if (!it) return false;
+    var opts = Store.getImportOptions();
+    if (isAdultItem(it)) return !!opts.adult;
+    if (it.type === "episode" || it.type === "series") return !!opts.series;
+    if (it.live) return !!opts.live;
+    return !!opts.movies;
+  }
+
+  function filterImportItems(items) {
+    if (!items || !items.length) return items || [];
+    var re = buildRegexFilter();
+    return items.filter(function (it) {
+      if (!shouldImportItem(it)) return false;
+      if (!re) return true;
+      var hay = String(it.title || "") + " " + String(it.group || "")
+        + " " + String(it.seriesName || "") + " " + String(it.episodeTitle || "")
+        + " " + String(it.tvgName || "");
+      return !re.test(hay);
+    });
+  }
+
+  /* Normalize a user-entered pattern. JavaScript has no inline (?i) flag
+     (that's PCRE/Python syntax) and would throw a SyntaxError for it, but we
+     already compile everything case-insensitively, so (?i) is redundant —
+     strip it wherever it appears. */
+  function sanitizeRegex(pattern) {
+    return String(pattern || "").replace(/\(\?i\)/gi, "").trim();
+  }
+
+  /* Compile the user's skip-regex once per filter pass (never once per item).
+     Returns null when disabled, empty, or un-compilable — meaning no filter. */
+  function buildRegexFilter() {
+    var opts = Store.getImportOptions();
+    if (!opts.regexEnabled) return null;
+    var pattern = sanitizeRegex(opts.regex);
+    if (!pattern) return null;
+    try { return new RegExp(pattern, "i"); } catch (e) { return null; }
+  }
+
+  /* Non-empty when the regex option is enabled but the pattern won't compile,
+     so imports can warn the user instead of silently filtering nothing. */
+  function invalidRegexWarning() {
+    var opts = Store.getImportOptions();
+    if (!opts.regexEnabled || !opts.regex) return "";
+    var pattern = sanitizeRegex(opts.regex);
+    if (!pattern) return "the pattern is empty.";
+    try { new RegExp(pattern, "i"); return ""; } catch (e) {
+      return "\u201C" + opts.regex + "\u201D is not a valid regular expression.";
+    }
+  }
+
   function liveItems() {
     return Store.getLiveItems();
   }
@@ -187,7 +254,25 @@
      no-op. Resolves to the number of series that yielded episodes. */
   function fetchAllSeriesEpisodes(listArg) {
     if (allFetchPromise) return allFetchPromise;
-    var list = (listArg || seriesList()).filter(function (s) { return !s.episodes.length; });
+    /* Skip series that would be excluded by the Import Options (e.g. Adult
+       content with the +18 toggle off, or all series with Series off, or a
+       name/group matching the skip regex). */
+    var re = buildRegexFilter();
+    var list = (listArg || seriesList()).filter(function (s) {
+      if (s.episodes.length) return false;
+      var pseudo = {
+        type: "series",
+        group: s.group,
+        title: s.seriesName,
+        seriesName: s.seriesName
+      };
+      if (!shouldImportItem(pseudo)) return false;
+      if (re) {
+        var hay = String(s.seriesName || "") + " " + String(s.group || "");
+        if (re.test(hay)) return false;
+      }
+      return true;
+    });
     if (!list.length) return Promise.resolve(0);
     var total = list.length;
     var done = 0, found = 0, failed = 0;
@@ -1244,7 +1329,7 @@
     header.appendChild(h);
     root.appendChild(header);
 
-    if (seriesList().some(function (s) { return !s.episodes.length; })) {
+    if (shouldImportItem({ type: "series" }) && seriesList().some(function (s) { return !s.episodes.length; })) {
       var loadBtn = document.createElement("button");
       loadBtn.id = "seriesFetchBtn";
       loadBtn.className = "btn btn-secondary focusable";
@@ -1970,7 +2055,7 @@
       debounce = setTimeout(function () { run(input.value); }, 120);
     });
     input.addEventListener("keydown", function (e) {
-      if (e.key === "Enter") { run(input.value); input.focus(); }
+      if (Nav.keyName(e) === "enter") { run(input.value); input.focus(); }
     });
 
     page.innerHTML = "";
@@ -2012,7 +2097,10 @@
     fileInput.accept = ".m3u,.m3u8,audio/x-mpegurl";
     drop.appendChild(fileInput);
     drop.addEventListener("click", function () { fileInput.click(); });
-    drop.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); } });
+    drop.addEventListener("keydown", function (e) {
+      var k = Nav.keyName(e);
+      if (k === "enter" || k === "space") { e.preventDefault(); fileInput.click(); }
+    });
     ["dragover", "drop"].forEach(function (ev) {
       drop.addEventListener(ev, function (e) {
         e.preventDefault();
@@ -2049,10 +2137,75 @@
       importPanel.appendChild(hint);
     }
     urlInput.addEventListener("keydown", function (e) {
-      if (e.key === "Enter") { e.preventDefault(); importFromUrl(urlInput.value.trim(), false); }
+      if (Nav.keyName(e) === "enter") { e.preventDefault(); importFromUrl(urlInput.value.trim(), false); }
     });
     importPanel.appendChild(urlRow);
     grid.appendChild(importPanel);
+
+    /* Import Options: which content types are imported from files, URLs and
+       providers. Disabled types are skipped on import — items already in the
+       library are kept. */
+    var opts = Store.getImportOptions();
+    var importOptsPanel = panel("Import Options", "Choose which content types are imported from files, URLs and providers.");
+    importOptsPanel.classList.add("panel-importopts");
+    var optsGrid = document.createElement("div");
+    optsGrid.className = "import-options";
+    var optDefs = [
+      { key: "live", label: "Live", hint: "Live channels" },
+      { key: "movies", label: "Movies", hint: "Movies & clips" },
+      { key: "series", label: "Series", hint: "Series & episodes" },
+      { key: "adult", label: "Adult +18", hint: "Adult content" }
+    ];
+    optDefs.forEach(function (d) {
+      optsGrid.appendChild(importOptionToggle(d.label, d.hint, d.key, !!opts[d.key]));
+    });
+    importOptsPanel.appendChild(optsGrid);
+
+    /* Advanced: skip anything matching a regular expression. */
+    var regexOn = !!opts.regexEnabled;
+    var regexInput = inputField("text", opts.regex, "Filters out content that matches this regex (advanced)");
+    regexInput.className = "import-regex-input focusable";
+    regexInput.setAttribute("aria-label", "Regular expression for content to skip");
+    regexInput.disabled = !regexOn;
+
+    function regexValid() {
+      var p = sanitizeRegex(regexInput.value);
+      if (!p) return false;
+      try { new RegExp(p, "i"); return true; } catch (e) { return false; }
+    }
+
+    var regexToggle = switchButton(regexOn, function (next) {
+      var p = regexInput.value.trim();
+      if (p && !regexValid()) {
+        toast("That is not a valid regular expression.", "err");
+        regexInput.classList.add("invalid");
+        return false;
+      }
+      regexOn = next;
+      regexInput.disabled = !regexOn;
+      regexInput.classList.remove("invalid");
+      Store.setImportOption("regex", p);
+      Store.setImportOption("regexEnabled", regexOn);
+      toast(regexOn
+        ? (p ? "Regex filtering enabled" : "Regex filtering enabled — type a pattern to filter")
+        : "Regex filtering disabled", "ok");
+      if (regexOn && !p) { try { regexInput.focus(); } catch (e) { /* ignore */ } }
+      return true;
+    }, "Enable regex filtering");
+    regexToggle.classList.add("import-regex-toggle");
+
+    regexInput.addEventListener("input", function () {
+      var p = regexInput.value.trim();
+      regexInput.classList.toggle("invalid", regexOn && !!p && !regexValid());
+      Store.setImportOption("regex", p);
+    });
+
+    var regexRow = document.createElement("div");
+    regexRow.className = "import-regex-row";
+    regexRow.appendChild(regexInput);
+    regexRow.appendChild(regexToggle);
+    importOptsPanel.appendChild(regexRow);
+    grid.appendChild(importOptsPanel);
 
     /* Xtream provider */
     var xt = Store.getSettings().xtream || {};
@@ -2183,6 +2336,67 @@
     return b;
   }
 
+  /* A switch-style toggle button for the Import Options. Persists its state
+     to settings immediately so the next import respects it. */
+  function importOptionToggle(label, hint, key, value) {
+    var el = document.createElement("button");
+    el.type = "button";
+    el.className = "import-toggle focusable" + (value ? " on" : "");
+    el.setAttribute("role", "switch");
+    el.setAttribute("aria-checked", value ? "true" : "false");
+    el.setAttribute("aria-label", label + ": " + (value ? "import enabled" : "import disabled"));
+
+    var text = document.createElement("span");
+    text.className = "import-toggle-label";
+    var t = document.createElement("span");
+    t.textContent = label;
+    var h = document.createElement("small");
+    h.textContent = hint;
+    text.appendChild(t);
+    text.appendChild(h);
+
+    var sw = document.createElement("span");
+    sw.className = "switch";
+    sw.setAttribute("aria-hidden", "true");
+
+    el.appendChild(text);
+    el.appendChild(sw);
+
+    el.addEventListener("click", function () {
+      value = !value;
+      el.classList.toggle("on", value);
+      el.setAttribute("aria-checked", value ? "true" : "false");
+      el.setAttribute("aria-label", label + ": " + (value ? "import enabled" : "import disabled"));
+      Store.setImportOption(key, value);
+      toast((value ? "Importing " : "Skipping ") + label + " content", "ok");
+    });
+    return el;
+  }
+
+  /* A bare switch (no label) used next to a field, e.g. the regex skip box.
+     onChange(next) may return false to reject the change and keep the old
+     state. */
+  function switchButton(value, onChange, label) {
+    var el = document.createElement("button");
+    el.type = "button";
+    el.className = "switch-btn focusable" + (value ? " on" : "");
+    el.setAttribute("role", "switch");
+    el.setAttribute("aria-checked", value ? "true" : "false");
+    el.setAttribute("aria-label", label || "Toggle");
+    var sw = document.createElement("span");
+    sw.className = "switch";
+    sw.setAttribute("aria-hidden", "true");
+    el.appendChild(sw);
+    el.addEventListener("click", function () {
+      var next = !value;
+      if (onChange && onChange(next) === false) return;
+      value = next;
+      el.classList.toggle("on", value);
+      el.setAttribute("aria-checked", value ? "true" : "false");
+    });
+    return el;
+  }
+
   function normalizeSource(s) {
     var t = String(s == null ? "" : s).trim().replace(/\s+/g, " ");
     /* Legacy items may still carry the embed marker; treat "*url", a plain
@@ -2196,8 +2410,11 @@
 
   /* Merge parsed items into the library, keyed by source.
      New sources are added; matching sources update metadata (no duplicates).
-     Does a single batched save so huge playlists import without O(n^2) writes. */
+     Does a single batched save so huge playlists import without O(n^2) writes.
+     Items excluded by the Import Options are dropped here too, so any import
+     path (file, URL, Xtream, lazy episode loads) respects the toggles. */
   function mergeIntoLibrary(parsedItems) {
+    parsedItems = filterImportItems(parsedItems);
     var p = mergePlanner(Store.getItems());
     parsedItems.forEach(p.mergeItem);
     Store.saveItems(p.merged);
@@ -2219,6 +2436,7 @@
   }
 
   function mergeIntoLibraryAsync(parsedItems, onProgress) {
+    parsedItems = filterImportItems(parsedItems);
     return new Promise(function (resolve) {
       var p = mergePlanner(Store.getItems());
       var i = 0;
@@ -2301,14 +2519,22 @@
      Resolves true when items were imported. */
   function applyParseResultAsync(result, stay) {
     if (result.errors.length) toast(result.errors.join(" "), "err");
-    if (!result.items.length) {
-      toast("No playable entries found.", "err");
+    var reWarn = invalidRegexWarning();
+    if (reWarn) toast("Regex filtering is off: " + reWarn, "err");
+    var all = result.items || [];
+    var items = filterImportItems(all);
+    if (!items.length) {
+      toast(all.length
+        ? "Everything in this playlist is excluded by your Import Options."
+        : "No playable entries found.", "err");
       return Promise.resolve(false);
     }
-    return mergeIntoLibraryAsync(result.items, function (pct) {
+    var filtered = all.length - items.length;
+    return mergeIntoLibraryAsync(items, function (pct) {
       setProgressStatus("Importing items… " + pct + "%");
     }).then(function (c) {
-      toast("Added " + c.added + " · Updated " + c.updated + " · Duplicates skipped " + c.skipped, "ok");
+      toast("Added " + c.added + " · Updated " + c.updated + " · Duplicates skipped " + c.skipped
+        + (filtered ? " · " + filtered + " excluded by import options" : ""), "ok");
       if (stay) App.render();
       else App.navigate("#home");
       return true;
@@ -2517,17 +2743,27 @@
     showProgress(isRefresh ? "Refreshing…" : "Importing…", "Contacting provider…");
     return Xtream.fetchLibrary(baseClean, username, password)
       .then(function (res) {
-        if (!res.items.length) {
+        var reWarn = invalidRegexWarning();
+        if (reWarn) toast("Regex filtering is off: " + reWarn, "err");
+        if (!res.items || !res.items.length) {
           hideProgress();
           toast("Provider returned no playable items.", "err");
           return false;
         }
+        var items = filterImportItems(res.items);
+        if (!items.length) {
+          hideProgress();
+          toast("Everything from this provider is excluded by your Import Options.", "err");
+          return false;
+        }
+        var filtered = res.items.length - items.length;
         setProgressStatus("Importing items…");
-        return queuedMerge(res.items, function (pct) {
+        return queuedMerge(items, function (pct) {
           setProgressStatus("Importing items… " + pct + "%");
         }).then(function (c) {
           hideProgress();
-          toast("Xtream: Added " + c.added + " · Updated " + c.updated + " · Duplicates skipped " + c.skipped, "ok");
+          toast("Xtream: Added " + c.added + " · Updated " + c.updated + " · Duplicates skipped " + c.skipped
+            + (filtered ? " · " + filtered + " excluded by import options" : ""), "ok");
           if (isRefresh && App && App.render) App.render();
           if (xtSeriesAutoFill && seriesList().some(function (s) { return !s.episodes.length; })) {
             fetchAllSeriesEpisodes();
@@ -2981,7 +3217,7 @@
       debounce = setTimeout(function () { render(search.value); }, 100);
     });
     search.addEventListener("keydown", function (e) {
-      if (e.key === "Enter" && firstMatched) {
+      if (Nav.keyName(e) === "enter" && firstMatched) {
         e.preventDefault();
         closeModal();
         onPick(firstMatched);
@@ -3066,6 +3302,8 @@
     getSeries: getSeries,
     fetchAllSeriesEpisodes: fetchAllSeriesEpisodes,
     isLiveItem: isLiveItem,
-    liveItems: liveItems
+    liveItems: liveItems,
+    isAdultItem: isAdultItem,
+    shouldImportItem: shouldImportItem
   };
 })(window);

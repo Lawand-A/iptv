@@ -1,11 +1,61 @@
 /* Navigation — spatial keyboard & Smart TV remote navigation.
    Focusables are grouped into rows; arrows move within a row (left/right)
-   and between rows (up/down), wrapping at the edges. */
+   and between rows (up/down), wrapping at the edges.
+
+   Smart TV remotes are handled specially because their webviews differ from
+   desktop browsers in three ways that made navigation flaky:
+     • Remotes may deliver keydown with an empty or non-standard `key`
+       ("Left" instead of "ArrowLeft", "Select" instead of "Enter", or only a
+       keyCode). keyName() normalizes every form so arrows / OK / back always
+       work on Tizen, webOS, Android TV, CEF shells, etc.
+     • Programmatic .focus() can silently fail or lag on TV webviews, leaving
+       document.activeElement stuck on <body> — navigation kept our own
+       lastFocused pointer and falls back to it, and lazily tabindexes
+       non-native focusables (e.g. the .file-drop div) so .focus() works.
+     • After a render, layout can take a beat before elements have size, so
+       re-focus retries until real focusables exist. */
 (function (global) {
   "use strict";
 
   var lastFocused = null;
   var usedKeyboard = false;
+
+  var KEY_ALIASES = {
+    ArrowLeft: "left", Left: "left",
+    ArrowRight: "right", Right: "right",
+    ArrowUp: "up", Up: "up",
+    ArrowDown: "down", Down: "down",
+    Enter: "enter", Select: "enter", OK: "enter", ok: "enter",
+    " ": "space", Spacebar: "space",
+    Escape: "escape",
+    Backspace: "backspace", Back: "backspace"
+  };
+  var KEY_CODES = {
+    37: "left", 38: "up", 39: "right", 40: "down",
+    13: "enter", 32: "space", 27: "escape", 8: "backspace",
+    461: "backspace", 10009: "backspace", 1082: "backspace"
+  };
+
+  /* Canonicalize a keydown into left/right/up/down/enter/space/escape/
+     backspace (or the raw key string for anything else). */
+  function keyName(e) {
+    if (!e) return "";
+    var k = e.key || e.keyIdentifier || "";
+    if (KEY_ALIASES[k]) return KEY_ALIASES[k];
+    var code = e.keyCode || e.which;
+    if (KEY_CODES[code]) return KEY_CODES[code];
+    return k || "";
+  }
+
+  /* Rough Smart-TV detection (Tizen, webOS, NetCast, Android TV, consoles…).
+     Used to auto-focus on load (remotes expect the app to land on an item)
+     and to skip smooth-scroll animations TV engines choke on. */
+  function isTV() {
+    var ua = "";
+    try { ua = (global.navigator && global.navigator.userAgent) || ""; } catch (e) { /* ignore */ }
+    return /(?:Tizen|Web0S|webOS|NetCast|SMART-?TV|Smarttv|Viera|Vestel|Hisense|Xbox|PlayStation|CrKey|GoogleTV|Android.{0,40}\bTV|Opera.{0,10}TV)/i.test(ua);
+  }
+  var tvMode = isTV();
 
   function isVisible(el) {
     if (!el || el.hidden) return false;
@@ -29,17 +79,24 @@
     return app && app.contains(el);
   }
 
-  function move(dir) {
-    var current = document.activeElement;
-    if (current === document.body || current === null) current = null;
-    if (current && !current.classList.contains("focusable")) current = null;
+  /* The element navigation should move from: the real DOM focus when it is a
+     visible focusable, otherwise our own lastFocused pointer. TV webviews
+     sometimes fail to move document.activeElement, so relying on it alone
+     made navigation stop dead after the first step. */
+  function currentFocusable() {
+    var c = document.activeElement;
+    if (c && c !== document.body && isFocusable(c) && isVisible(c)) return c;
+    if (lastFocused && document.body.contains(lastFocused) && isFocusable(lastFocused) && isVisible(lastFocused)) return lastFocused;
+    return null;
+  }
 
+  function move(dir) {
+    usedKeyboard = true;
+    var current = currentFocusable();
     if (!current) {
       focusFirstContent();
       return;
     }
-
-    usedKeyboard = true;
 
     /* 1-D gap between two intervals — 0 when they overlap. Full-width bars
        (search inputs, the file drop zone) overlap every column, so they are
@@ -148,9 +205,10 @@
 
   function focusFirstContent() {
     var list = getFocusables();
-    if (!list.length) return;
+    if (!list.length) return false;
     var first = list.find(function (el) { return inApp(el); }) || list[0];
     focusEl(first);
+    return true;
   }
 
   function markFocused(el) {
@@ -163,11 +221,25 @@
     }
   }
 
+  /* Ensure .focus() is honoured even on elements that are not natively
+     focusable (e.g. the .file-drop div). tabindex="-1" keeps them out of the
+     Tab order while still allowing programmatic focus everywhere. */
+  function ensureFocusable(el) {
+    if (!el || !el.tagName) return;
+    var tag = el.tagName;
+    if (tag === "BUTTON" || tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+    if (tag === "A" && el.getAttribute("href")) return;
+    if (!el.hasAttribute("tabindex")) el.setAttribute("tabindex", "-1");
+  }
+
   function focusEl(el) {
     if (!el) return;
+    ensureFocusable(el);
     try { el.focus(); } catch (e) { /* ignore */ }
     markFocused(el);
-    try { el.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" }); } catch (e) { /* ignore */ }
+    try {
+      el.scrollIntoView({ block: "nearest", inline: "nearest", behavior: tvMode ? "auto" : "smooth" });
+    } catch (e) { /* ignore */ }
   }
 
   function isFocusable(el) {
@@ -181,31 +253,25 @@
   }
 
   function onKey(e) {
-    var key = e.key;
+    var key = keyName(e);
     var typing = isTyping(e.target);
 
-    if (key === "Escape") {
-      if (UI.modalOpen()) {
+    if (key === "escape" || key === "backspace") {
+      if (typing) return;
+      if (key === "escape" && UI.modalOpen()) {
         UI.closeModal();
         return;
       }
       e.preventDefault();
-      if (Player.isActive()) Player.escape();
-      else global.App && App.goBack();
-      return;
-    }
-
-    if (key === "Backspace") {
-      if (typing) return;
-      e.preventDefault();
+      usedKeyboard = true;
       if (Player.isActive()) Player.escape();
       else global.App && App.goBack();
       return;
     }
 
     if (typing) {
-      if (key === "Enter") return;
-      if (key === "ArrowDown" || key === "ArrowUp") {
+      if (key === "enter") return;
+      if (key === "up" || key === "down") {
         var t = e.target;
         /* Text-like inputs, textareas and dropdowns: up/down moves to the
            next field instead of editing text / cycling the dropdown
@@ -213,7 +279,7 @@
         if (t && (t.tagName === "SELECT" || t.tagName === "TEXTAREA" ||
             (t.tagName === "INPUT" && /^(text|password|url|email|search|number|tel)$/.test(t.type)))) {
           e.preventDefault();
-          move(key === "ArrowDown" ? "down" : "up");
+          move(key === "down" ? "down" : "up");
         }
       }
       return;
@@ -222,14 +288,14 @@
     /* Do not steal arrows from the media element (native seek/volume). */
     if (e.target && (e.target.tagName === "VIDEO" || e.target.tagName === "IFRAME")) return;
 
-    var arrows = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" };
-    if (arrows[key]) {
+    if (key === "left" || key === "right" || key === "up" || key === "down") {
       e.preventDefault();
-      move(arrows[key]);
-    } else if (key === "Enter" || key === " " || key === "Select" || key === "OK") {
+      move(key);
+    } else if (key === "enter" || key === "space") {
       var cur = document.activeElement;
       if (cur && isFocusable(cur)) {
         e.preventDefault();
+        usedKeyboard = true;
         cur.click();
       }
     }
@@ -243,11 +309,21 @@
     }
   }
 
-  /* Call after any page render: re-focus content when the user navigates
-     by keyboard, otherwise leave focus alone (mouse/touch users). */
+  /* Call after any page render: re-focus content when the user navigates by
+     keyboard, and always on Smart TVs (remotes expect the app to land on an
+     item). Retried a few times because TV webviews can take a moment to lay
+     out — until then focusables have zero bounds and getFocusables() is
+     empty, which used to leave navigation dead after a render. */
+  var FOCUS_ATTEMPTS = 8;
+  var FOCUS_DELAY = 80;
   function afterRender() {
-    if (!usedKeyboard) return;
-    setTimeout(focusFirstContent, 30);
+    if (!usedKeyboard && !tvMode) return;
+    retryFirstFocus(0);
+  }
+  function retryFirstFocus(attempt) {
+    if (focusFirstContent()) return;
+    if (attempt >= FOCUS_ATTEMPTS) return;
+    setTimeout(function () { retryFirstFocus(attempt + 1); }, FOCUS_DELAY);
   }
 
   function init() {
@@ -258,6 +334,7 @@
     init: init,
     restoreFocus: restoreFocus,
     afterRender: afterRender,
-    focusFirst: focusFirstContent
+    focusFirst: focusFirstContent,
+    keyName: keyName
   };
 })(window);
