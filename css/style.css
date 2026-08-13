@@ -422,6 +422,63 @@ textarea { resize: vertical; min-height: 80px; }
   padding: 10px 4px;
 }
 
+/* ---------- History page remove button ---------- */
+.history-card-wrap {
+  position: relative;
+  width: 100%;
+}
+.history-card-wrap .card {
+  width: 100%;
+}
+.history-remove {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  left: auto;
+  z-index: 10;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,.72);
+  color: #fff;
+  font-size: 0;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0;
+  border: 1px solid rgba(255,255,255,.18);
+  cursor: pointer;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .15s ease, background .15s ease, transform .1s ease;
+}
+.history-card-wrap:hover .history-remove,
+.history-card-wrap:focus-within .history-remove,
+.history-card-wrap .history-remove.focused,
+.history-card-wrap .history-remove.spatial-focus,
+.history-remove:hover,
+.history-remove:focus-visible {
+  opacity: 1;
+  visibility: visible;
+}
+.history-remove:hover,
+.history-remove:focus-visible {
+  background: var(--err);
+  color: #fff;
+}
+.history-remove:active { transform: scale(.92); }
+
+/* Mobile / touch / small screens: hamburger menu is visible (max-width: 900px),
+   so always show the remove button so it can be tapped. */
+@media (max-width: 900px), (pointer: coarse) {
+  .history-remove {
+    opacity: .78;
+    visibility: visible;
+  }
+}
+
 /* ---------- Focus ring (Smart TV / keyboard) ---------- */
 .focusable {
   outline: none;
