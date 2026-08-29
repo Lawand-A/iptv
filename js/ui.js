@@ -10,6 +10,50 @@
   var modalRoot = document.getElementById("modalRoot");
   var toastRoot = document.getElementById("toastRoot");
 
+  /* Instant-reload snapshot: the Home page's last rendered markup, cached so
+     app.js can paint it immediately on the next boot — before the library
+     has even loaded from IndexedDB — instead of showing a blank page while
+     waiting. Home is the only page snapshotted (its rows are always capped
+     to ~12-24 items each, so the cached HTML stays small regardless of
+     library size) and it is purely a visual placeholder: app.js marks it
+     inert (no clicks, no keyboard focus) and the real renderHome() always
+     replaces it wholesale once actual data is ready, so a stale or even
+     completely broken snapshot can never linger or affect real state —
+     at worst it fails to save/restore and the page is blank for a moment,
+     exactly like before this existed. */
+  var HOME_SNAPSHOT_KEY = "iptv_home_snapshot_v1";
+  var HOME_SNAPSHOT_MAX = 300000;
+  function saveHomeSnapshot(html) {
+    try {
+      if (html && html.length <= HOME_SNAPSHOT_MAX) {
+        localStorage.setItem(HOME_SNAPSHOT_KEY, html);
+      } else {
+        localStorage.removeItem(HOME_SNAPSHOT_KEY);
+      }
+    } catch (e) { /* ignore — quota, private mode, etc. */ }
+  }
+  /* Called when the library is cleared/reset — otherwise the stale snapshot
+     would keep flashing the old (pre-clear) Home page for a moment on the
+     next reload, before the real (now empty) render replaces it. */
+  function clearHomeSnapshot() {
+    try { localStorage.removeItem(HOME_SNAPSHOT_KEY); } catch (e) { /* ignore */ }
+  }
+
+  /* Write a cached derived value (label/search-key) onto an item or series
+     record as a non-enumerable property. Every "update" path in this app
+     (mergePlanner's mergeItem, Store.updateItem) builds the new object via
+     Object.assign({}, old, patch, ...) — which only copies old's *enumerable*
+     own properties. Using defineProperty here means a refresh or edit that
+     changes an item's title/group can never leave a stale cached label or
+     search key behind: the new object simply won't have this property at
+     all, so the cache getters (which check `=== undefined`) recompute it
+     fresh. Plain `it._label = value` would NOT have this safety — Object.assign
+     would carry it straight through since normal assignment is enumerable. */
+  function defineCache(obj, key, value) {
+    Object.defineProperty(obj, key, { value: value, writable: true, configurable: true, enumerable: false });
+    return value;
+  }
+
   function escapeHtml(s) {
     return String(s == null ? "" : s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -392,6 +436,7 @@
       img.loading = "lazy";
       bindPosterImage(img, wrap);
       img.src = item.poster;
+      if (global.ImageCache) ImageCache.useCached(img, item.poster);
       wrap.appendChild(img);
     } else {
       wrap.appendChild(fallbackIcon(wrap));
@@ -588,11 +633,12 @@
      references come back from every Store call — so this turns an O(n)
      toLowerCase() pass on every single page visit (not just every
      keystroke) into a one-time cost per item, ever. A merge or edit always
-     produces a fresh object (see mergePlanner/updateItem), so there is
-     nothing to invalidate. */
+     produces a fresh object (see mergePlanner/updateItem) that never has
+     this property — defineCache made it non-enumerable, so Object.assign
+     never carries a stale value over — so there is nothing to invalidate. */
   function titleSearchKey(it) {
     if (it._titleKey === undefined) {
-      it._titleKey = String(it.title || it.seriesName || "").toLowerCase();
+      return defineCache(it, "_titleKey", String(it.title || it.seriesName || "").toLowerCase());
     }
     return it._titleKey;
   }
@@ -603,13 +649,13 @@
      the library actually changes, so caching on them is just as safe. */
   function itemSearchHay(it) {
     if (it._searchHay === undefined) {
-      it._searchHay = ((it.title || "") + " " + (it.group || "") + " " + (it.seriesName || "") + " " + (it.episodeTitle || "") + " " + (it.tvgName || "")).toLowerCase();
+      return defineCache(it, "_searchHay", ((it.title || "") + " " + (it.group || "") + " " + (it.seriesName || "") + " " + (it.episodeTitle || "") + " " + (it.tvgName || "")).toLowerCase());
     }
     return it._searchHay;
   }
   function seriesSearchHay(s) {
     if (s._searchHay === undefined) {
-      s._searchHay = (s.seriesName + " " + (s.group || "")).toLowerCase();
+      return defineCache(s, "_searchHay", (s.seriesName + " " + (s.group || "")).toLowerCase());
     }
     return s._searchHay;
   }
@@ -785,6 +831,7 @@
 
     page.innerHTML = "";
     page.appendChild(root);
+    saveHomeSnapshot(root.outerHTML);
   }
 
   function appendIf(container, node) {
@@ -959,6 +1006,7 @@
     if (first) {
       var img = document.createElement("img");
       img.src = first;
+      if (global.ImageCache) ImageCache.useCached(img, first);
       img.alt = name;
       img.loading = "lazy";
       bindPosterImage(img, art, "▦");
@@ -1085,13 +1133,15 @@
        single render (every page switch to Live/a category, every re-sort)
        into a one-time cost per item instead of paying it again on every
        visit. A merge or edit always produces a fresh object (see
-       mergePlanner/updateItem), so there is nothing to invalidate. */
+       mergePlanner/updateItem) that never has this property —
+       defineCache made it non-enumerable, so Object.assign never carries a
+       stale value over — so there is nothing to invalidate. */
     function cachedLabel(it) {
-      if (it._label === undefined) it._label = labelFor(it);
+      if (it._label === undefined) return defineCache(it, "_label", labelFor(it));
       return it._label;
     }
     function cachedLabelLower(it) {
-      if (it._labelLower === undefined) it._labelLower = cachedLabel(it).toLowerCase();
+      if (it._labelLower === undefined) return defineCache(it, "_labelLower", cachedLabel(it).toLowerCase());
       return it._labelLower;
     }
 
@@ -1438,6 +1488,7 @@
       bgImg.loading = "lazy";
       bindPosterImage(bgImg, bg);
       bgImg.src = s.poster;
+      if (global.ImageCache) ImageCache.useCached(bgImg, s.poster);
       bg.appendChild(bgImg);
     }
     backdrop.appendChild(bg);
@@ -1453,6 +1504,7 @@
       img.alt = s.seriesName;
       bindPosterImage(img, poster);
       img.src = s.poster;
+      if (global.ImageCache) ImageCache.useCached(img, s.poster);
       poster.appendChild(img);
     } else {
       poster.appendChild(fallbackIcon(poster));
@@ -1593,6 +1645,7 @@
         tImg.loading = "lazy";
         bindPosterImage(tImg, thumb);
         tImg.src = ep.poster;
+        if (global.ImageCache) ImageCache.useCached(tImg, ep.poster);
         thumb.appendChild(tImg);
       } else {
         thumb.textContent = "▶";
@@ -1720,6 +1773,7 @@
       bgImg.loading = "lazy";
       bindPosterImage(bgImg, bg);
       bgImg.src = item.poster;
+      if (global.ImageCache) ImageCache.useCached(bgImg, item.poster);
       bg.appendChild(bgImg);
     }
     backdrop.appendChild(bg);
@@ -1732,6 +1786,7 @@
     if (item.poster) {
       var img = document.createElement("img");
       img.src = item.poster;
+      if (global.ImageCache) ImageCache.useCached(img, item.poster);
       img.alt = item.title;
       bindPosterImage(img, poster);
       poster.appendChild(img);
@@ -3435,6 +3490,7 @@
     importFile: importFile,
     importFromUrl: importFromUrl,
     refreshSources: refreshSources,
+    clearHomeSnapshot: clearHomeSnapshot,
     mergeIntoLibrary: mergeIntoLibrary,
     setProgressStatus: setProgressStatus,
     confirmModal: confirmModal,

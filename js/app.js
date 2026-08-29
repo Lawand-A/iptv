@@ -174,12 +174,18 @@
         } else if (action === "clear-library") {
           UI.confirmModal("Clear the entire library?", "All items, history, progress and watchlist will be removed.", function () {
             Store.clearLibrary();
+            if (UI.clearHomeSnapshot) UI.clearHomeSnapshot();
+            if (global.ImageCache) ImageCache.clearAll();
             UI.toast("Library cleared", "ok");
             navigate("#home");
           });
         } else if (action === "reset") {
           UI.confirmModal("Reset everything?", "This wipes all application data. There is no undo.", function () {
-            Store.resetAll().then(function () { location.reload(); }).catch(function () { location.reload(); });
+            if (UI.clearHomeSnapshot) UI.clearHomeSnapshot();
+            var imgClear = global.ImageCache ? ImageCache.clearAll() : Promise.resolve();
+            imgClear.then(function () {
+              return Store.resetAll();
+            }).then(function () { location.reload(); }).catch(function () { location.reload(); });
           });
         } else if (action === "delete-refresh") {
           UI.confirmModal("Delete and re-import?", "All current items will be removed, then re-imported from your saved sources. History, progress and watchlist are kept.", function () {
@@ -191,7 +197,34 @@
     });
   }
 
+  /* Paint the last-known Home page instantly, before the real library has
+     even loaded from IndexedDB, so a reload/reopen never shows a blank page
+     while that (necessarily async) load is in flight. Purely a placeholder:
+     wrapped in its own `inert` (+ pointer-events:none as a fallback for
+     browsers without `inert`) element so it can't be clicked or focused, and
+     nested inside #app rather than applied to #app itself — the real
+     render()'s `page.innerHTML = ""` wipes this wrapper out along with
+     everything else, so there is nothing to clean up and nothing that can
+     linger if this fails or the snapshot is stale/missing. Any failure here
+     (corrupt/missing snapshot, localStorage unavailable) just leaves the
+     page blank, exactly as it was before this existed. */
+  function paintBootSnapshot() {
+    try {
+      var hash = location.hash || "#home";
+      if (hash !== "#home" && hash !== "#") return;
+      var html = localStorage.getItem("iptv_home_snapshot_v1");
+      if (!html) return;
+      var wrap = document.createElement("div");
+      wrap.setAttribute("inert", "");
+      wrap.style.pointerEvents = "none";
+      wrap.innerHTML = html;
+      appEl.innerHTML = "";
+      appEl.appendChild(wrap);
+    } catch (e) { /* ignore */ }
+  }
+
   function init() {
+    paintBootSnapshot();
     Nav.init();
     bindGlobal();
     if (Store.setPersistErrorHandler && UI) {
