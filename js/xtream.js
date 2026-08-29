@@ -7,7 +7,7 @@
 (function (global) {
   "use strict";
 
-  if (global.console) console.log("[build] xtream.js v10 (lazy series episodes)");
+  if (global.console) console.log("[build] xtream.js v11 (CORS proxy fallback)");
 
   var API_PATH = "player_api.php";
 
@@ -29,7 +29,31 @@
     return base + "/" + API_PATH + "?" + q;
   }
 
-  function request(url) {
+  /* Build the URL for the built-in CORS proxy (Cloudflare Pages Function).
+     When the app is hosted on the same origin the proxy is right here;
+     otherwise fall back to no proxy (direct fetch only). */
+  function proxyUrl(url) {
+    var loc = global.location;
+    var origin = loc ? (loc.protocol + "//" + loc.host) : "";
+    if (!origin) return "";
+    return origin + "/api/proxy?url=" + encodeURIComponent(url);
+  }
+
+  /* True when the error looks like a CORS or mixed-content block:
+     the browser refused the request at the network level before getting
+     an HTTP response. */
+  function isCorsLikeError(err) {
+    if (!err) return false;
+    /* AbortError is a timeout, not CORS. */
+    if (err.name === "AbortError") return false;
+    /* TypeError is what Chrome/Firefox throw for CORS blocks and network errors. */
+    if (err instanceof TypeError) return true;
+    /* Some browsers use "Failed to fetch" or "NetworkError". */
+    var msg = String(err.message || err).toLowerCase();
+    return msg.indexOf("cors") !== -1 || msg.indexOf("network") !== -1 || msg.indexOf("failed to fetch") !== -1;
+  }
+
+  function directFetch(url) {
     var ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
     var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 120000) : null;
     return new Promise(function (resolve, reject) {
@@ -46,9 +70,23 @@
     });
   }
 
-  /* Fetch a URL directly. No third-party proxies are used: if the provider does
-     not send CORS headers the browser blocks the request, and we surface a
-     clear reason instead of falling back to a middleman. */
+  function request(url) {
+    return directFetch(url).catch(function (err) {
+      /* If the direct fetch failed with what looks like a CORS block,
+         automatically retry through the built-in proxy. The proxy runs
+         server-side (Cloudflare Pages Function) so CORS does not apply. */
+      if (isCorsLikeError(err)) {
+        var proxied = proxyUrl(url);
+        if (proxied) {
+          return directFetch(proxied);
+        }
+      }
+      throw err;
+    });
+  }
+
+  /* Fetch a URL directly. Falls back to the built-in CORS proxy (Cloudflare
+     Pages Function at /api/proxy) when the request is blocked by CORS. */
   function fetchDirect(url, parse) {
     return request(url).then(function (res) {
       if (!res.ok) {
@@ -96,12 +134,12 @@
     var m = /^([a-z]+):\/\//i.exec(String(url || ""));
     var targetProto = m ? m[1] : "";
     if (pageProto === "https:" && targetProto === "http") {
-      return "Blocked: this page is HTTPS but the Xtream server is HTTP. Browsers refuse to call http:// from a https:// page (mixed content). Fix: open this app over HTTP instead, or use an https:// server address if the provider offers one.";
+      return "Blocked: this page is HTTPS but the Xtream server is HTTP (mixed content). The built-in proxy was also unable to reach the server. Open the server URL in a browser tab to confirm it responds, and check with your provider.";
     }
     if (pageProto === "file:") {
       return "The app is opened straight from disk (file://), and Chrome/Edge block all network requests from file:// pages. Open this app via http:// or https://, then try again.";
     }
-    return "Could not reach the provider: either its server does not allow cross-origin requests (no CORS headers) or it is unreachable. Open the server URL in a browser tab to confirm it responds. If it loads there but not here, the server blocks CORS and no static HTML page can read it — ask the provider to enable CORS.";
+    return "Could not reach the provider: its server is unreachable or actively refusing the connection. Open the server URL in a browser tab to confirm it responds. If it loads there but not here, the server may be blocking connections from cloud networks — check with your provider.";
   }
 
   /* First non-empty value among candidate keys. */

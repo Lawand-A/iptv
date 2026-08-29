@@ -2488,6 +2488,31 @@
      an import never interleave inside mergeIntoLibraryAsync (each one rebuilds
      and persists the whole library). */
   var mergeQueue = Promise.resolve();
+  /* Best-effort merge of the provider's series containers into a freshly
+     fetched/parsed library so the Series section is populated even when the
+     Xtream get.php export omits series (common on many provider panels) or
+     only partially includes them. Adds any series not already represented
+     by name; leaves everything else untouched. Resolves to `items`
+     unchanged on any failure (network error, no Xtream module, etc). */
+  function supplementXtreamSeries(items, base, user, pass) {
+    if (!(global.Xtream && Xtream.fetchSeriesContainers)) return Promise.resolve(items);
+    return Xtream.fetchSeriesContainers(base, user, pass).then(function (containers) {
+      if (!containers || !containers.length) return items;
+      var names = {};
+      items.forEach(function (it) {
+        if (it.type === "episode" || it.type === "series") {
+          var n = (it.seriesName || "").toLowerCase();
+          if (n) names[n] = true;
+        }
+      });
+      var fresh = containers.filter(function (c) {
+        var n = (c.seriesName || "").toLowerCase();
+        return n && !names[n];
+      });
+      return fresh.length ? items.concat(fresh) : items;
+    }).catch(function () { return items; });
+  }
+
   function queuedMerge(items, onProgress) {
     var run = mergeQueue.then(function () { return mergeIntoLibraryAsync(items, onProgress); });
     mergeQueue = run.catch(function () {});
@@ -2589,7 +2614,7 @@
       return Promise.resolve(false);
     }
     var filtered = all.length - items.length;
-    return mergeIntoLibraryAsync(items, function (pct) {
+    return queuedMerge(items, function (pct) {
       setProgressStatus("Importing items… " + pct + "%");
     }).then(function (c) {
       toast("Added " + c.added + " · Updated " + c.updated + " · Duplicates skipped " + c.skipped
@@ -2660,6 +2685,52 @@
       });
     }
 
+    /* Try the built-in CORS proxy (Cloudflare Pages Function) when a direct
+       fetch fails due to CORS or network errors. */
+    function fetchViaProxy(targetUrl) {
+      var loc = global.location;
+      var origin = loc ? (loc.protocol + "//" + loc.host) : "";
+      if (!origin) return Promise.reject(new Error("No proxy available"));
+      var proxied = origin + "/api/proxy?url=" + encodeURIComponent(targetUrl);
+      var ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+      var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 120000) : null;
+      var opts = { referrerPolicy: "no-referrer" };
+      if (ctrl) opts.signal = ctrl.signal;
+      return fetch(proxied, opts).then(function (res) {
+        if (timer) clearTimeout(timer);
+        if (!res.ok) {
+          return res.text().catch(function () { return ""; }).then(function (body) {
+            var e = new Error("HTTP " + res.status);
+            e.status = res.status;
+            var t = String(body || "").trim().replace(/\s+/g, " ");
+            if (t) e.body = t.slice(0, 300);
+            throw e;
+          });
+        }
+        return res.text();
+      }).then(function (text) {
+        return { url: targetUrl, text: text };
+      });
+    }
+
+    function isCorsLikeError(err) {
+      if (!err) return false;
+      if (err.name === "AbortError") return false;
+      if (err instanceof TypeError) return true;
+      var msg = String(err.message || err).toLowerCase();
+      return msg.indexOf("cors") !== -1 || msg.indexOf("network") !== -1 || msg.indexOf("failed to fetch") !== -1;
+    }
+
+    function tryWithProxy() {
+      return fetchViaProxy(url).catch(function () {
+        /* If the proxy also fails, try the HTTPS-upgraded version via proxy. */
+        if (/^http:\/\//i.test(url)) {
+          return fetchViaProxy(url.replace(/^http:\/\//i, "https://"));
+        }
+        throw new Error("Could not fetch the playlist directly (CORS) and the built-in proxy also failed. The server may be unreachable from the cloud.");
+      });
+    }
+
     /* Xtream get.php export links get special handling: many providers block
        the get.php playlist (some accounts) or omit series from it entirely,
        so the provider's player_api.php endpoint — which hosts live, movies
@@ -2696,31 +2767,24 @@
        containers from the API (best-effort, deduped by series name). */
     function xtSupplementSeries(result) {
       setProgressStatus("Fetching series from the provider…");
-      return global.Xtream.fetchSeriesContainers(xt.base, xt.username, xt.password)
-        .then(function (containers) {
-          if (containers && containers.length) {
-            var names = {};
-            result.items.forEach(function (it) {
-              if (it.type === "episode" || it.type === "series") {
-                var n = (it.seriesName || "").toLowerCase();
-                if (n) names[n] = true;
-              }
-            });
-            var fresh = containers.filter(function (c) {
-              var n = (c.seriesName || "").toLowerCase();
-              return n && !names[n];
-            });
-            if (fresh.length) result.items = result.items.concat(fresh);
-          }
-          return applyParseResultAsync(result, isRefresh);
-        })
-        .catch(function () {
+      return supplementXtreamSeries(result.items, xt.base, xt.username, xt.password)
+        .then(function (items) {
+          result.items = items;
           return applyParseResultAsync(result, isRefresh);
         });
     }
 
     showProgress(isRefresh ? "Refreshing…" : "Importing…", "Fetching playlist…");
     return fetchText(attempts[0], attempts.slice(1))
+      .catch(function (err) {
+        /* If the direct fetch failed with a CORS-like error, retry through
+           the built-in proxy before giving up. */
+        if (isCorsLikeError(err)) {
+          setProgressStatus("Direct fetch blocked — trying built-in proxy…");
+          return tryWithProxy();
+        }
+        throw err;
+      })
       .then(function (res) {
         Store.saveSettings({ m3uUrl: res.url });
         setProgressStatus("Parsing playlist…");
@@ -2746,15 +2810,15 @@
           });
         }
         hideProgress();
-        var msg = "Could not fetch the playlist from that URL. The link may be wrong or the server blocks it (CORS).";
+        var msg = "Could not fetch the playlist from that URL. The link may be wrong or the server is unreachable.";
         if (err && err.status) {
           if (/get\.php/i.test(url) && /username=/i.test(url)) {
             msg = "This is an Xtream export link and the provider rejected it (HTTP " + err.status + ") — many accounts block the get.php playlist. Use the Xtream panel in Settings (server URL + username + password) instead; it imports through the provider's API.";
           } else {
-            msg = "The playlist URL answered with HTTP " + err.status + (err.body ? " — the server says: \"" + err.body + "\"" : "") + ". This is the provider's own rejection (not a browser block) — test the link directly in a browser tab and check with your provider.";
+            msg = "The playlist URL answered with HTTP " + err.status + (err.body ? " — the server says: \"" + err.body + "\"" : "") + ". This is the provider's own rejection — test the link directly in a browser tab and check with your provider.";
           }
         } else if (isHttpsPage && /^http:\/\//i.test(url)) {
-          msg = "Blocked: this page is HTTPS but the playlist URL is HTTP. Browsers refuse to call http:// from a https:// page (mixed content). Fix: open this app over HTTP instead, or use an https:// address if the provider offers one.";
+          msg = "Blocked: this page is HTTPS but the playlist URL is HTTP (mixed content). The built-in proxy was also unable to reach the server. Open the server URL in a browser tab to confirm it responds.";
         }
         toast(msg, "err");
         return false;
@@ -2762,9 +2826,11 @@
   }
 
   /* Refresh every saved source from the navbar button: the saved M3U link and
-     the saved Xtream provider (in that order), one after the other — the merge
-     rewrites the whole library, so concurrent refreshes would clobber each
-     other. Shows an error only when nothing is saved. */
+     the saved Xtream provider. Both fetches run in parallel to cut total
+     refresh time in half; it's safe because every import path merges through
+     queuedMerge, which serializes writes to the library so concurrent
+     refreshes never clobber each other. Shows an error only when nothing is
+     saved. */
   function refreshSources() {
     var settings = Store.getSettings();
     var jobs = [];
@@ -2801,6 +2867,19 @@
     });
     showProgress(isRefresh ? "Refreshing…" : "Importing…", "Contacting provider…");
     return Xtream.fetchLibrary(baseClean, username, password)
+      .then(function (res) {
+        /* The m3u_plus export (get.php) often omits series entirely on some
+           provider panels/account types, even though the request otherwise
+           "succeeds" — unlike the player_api.php path, which always fetches
+           series explicitly. Best-effort fill the gap so a provider whose
+           get.php lacks series doesn't silently import without them. */
+        if (!res.viaM3u) return res;
+        setProgressStatus("Fetching series from the provider…");
+        return supplementXtreamSeries(res.items, baseClean, username, password).then(function (items) {
+          res.items = items;
+          return res;
+        });
+      })
       .then(function (res) {
         var reWarn = invalidRegexWarning();
         if (reWarn) toast("Regex filtering is off: " + reWarn, "err");
