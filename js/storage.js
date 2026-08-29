@@ -774,6 +774,11 @@
     write(KEYS.history, []);
     write(KEYS.progress, {});
     write(KEYS.watched, {});
+    /* Pins and the last-watched-season map reference specific item/series
+       ids — dangling references once every item is gone, so they'd
+       otherwise just sit there unused until a full Reset. */
+    write(KEYS.pins, []);
+    write(KEYS.lastSeriesSeason, {});
   }
 
   function resetAll() {
@@ -795,12 +800,26 @@
   /* ---------- Boot ---------- */
   function init() {
     return new Promise(function (resolve) {
+      /* Repair legacy items (stale embed-marker sources) in the background,
+         after the first render can already happen. This only ever touches
+         pre-existing corrupted entries from older parser versions — almost
+         always a no-op — so a huge library shouldn't pay an O(n) scan for it
+         before its first paint on every single reload. */
+      function repairInBackground() {
+        setTimeout(function () {
+          var rep = repairItems(itemsCache);
+          if (rep.changed) {
+            itemsCache = rep.items;
+            markIndexesDirty();
+            schedulePersist();
+          }
+        }, 0);
+      }
       function finishFrom(data) {
-        var rep = repairItems(Array.isArray(data) ? data.filter(isValidItem) : []);
-        itemsCache = rep.items;
+        itemsCache = Array.isArray(data) ? data.filter(isValidItem) : [];
         markIndexesDirty();
-        if (rep.changed) schedulePersist();
         resolve();
+        repairInBackground();
       }
       function fromLegacy() {
         finishFrom(read(KEYS.items, []));
@@ -822,15 +841,19 @@
             } else {
               rebuildIndexes();
             }
-            // keep a small localStorage mirror for older versions / fallback
-            if (itemsCache.length <= 20000) {
-              var s = JSON.stringify(itemsCache);
-              if (s.length <= LS_MIRROR_LIMIT) write(KEYS.items, itemsCache);
-              else { memDrop(KEYS.items); try { localStorage.removeItem(KEYS.items); } catch (e) { /* ignore */ } }
-            } else {
-              memDrop(KEYS.items);
-              try { localStorage.removeItem(KEYS.items); } catch (e) { /* ignore */ }
-            }
+            /* Keep a small localStorage mirror for older versions / fallback.
+               Deferred so JSON.stringify-ing a medium/large library never
+               delays first paint. */
+            setTimeout(function () {
+              if (itemsCache.length <= 20000) {
+                var s = JSON.stringify(itemsCache);
+                if (s.length <= LS_MIRROR_LIMIT) write(KEYS.items, itemsCache);
+                else { memDrop(KEYS.items); try { localStorage.removeItem(KEYS.items); } catch (e) { /* ignore */ } }
+              } else {
+                memDrop(KEYS.items);
+                try { localStorage.removeItem(KEYS.items); } catch (e) { /* ignore */ }
+              }
+            }, 0);
           } else {
             fromLegacy();
           }
