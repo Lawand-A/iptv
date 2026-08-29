@@ -2868,19 +2868,6 @@
     showProgress(isRefresh ? "Refreshing…" : "Importing…", "Contacting provider…");
     return Xtream.fetchLibrary(baseClean, username, password)
       .then(function (res) {
-        /* The m3u_plus export (get.php) often omits series entirely on some
-           provider panels/account types, even though the request otherwise
-           "succeeds" — unlike the player_api.php path, which always fetches
-           series explicitly. Best-effort fill the gap so a provider whose
-           get.php lacks series doesn't silently import without them. */
-        if (!res.viaM3u) return res;
-        setProgressStatus("Fetching series from the provider…");
-        return supplementXtreamSeries(res.items, baseClean, username, password).then(function (items) {
-          res.items = items;
-          return res;
-        });
-      })
-      .then(function (res) {
         var reWarn = invalidRegexWarning();
         if (reWarn) toast("Regex filtering is off: " + reWarn, "err");
         if (!res.items || !res.items.length) {
