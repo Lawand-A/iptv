@@ -83,8 +83,36 @@
     return fetchDirect(url, function (res) { return res.text(); });
   }
 
-  /* Build a clear, actionable message for a network-level failure. */
-  function describeFetchError(err, url) {
+  /* Best-effort, read-nothing diagnostic: was the request being redirected
+     (e.g. the provider force-redirects http:// to https://) rather than
+     genuinely CORS-blocked or unreachable? redirect:"manual" makes fetch
+     resolve (instead of following the redirect) with an opaque response
+     whose type is "opaqueredirect" when the server answered with a 3xx —
+     this is readable by JS even when the redirect target itself is fully
+     CORS-opaque, because the redirect response itself is never read for
+     content. A short timeout is enough: real redirects come back from the
+     edge almost instantly, before any slow backend work happens. Resolves
+     to true/false; never rejects. */
+  function probeForRedirect(url) {
+    var ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 10000) : null;
+    var opts = { redirect: "manual", referrerPolicy: "no-referrer" };
+    if (ctrl) opts.signal = ctrl.signal;
+    return fetch(url, opts).then(function (res) {
+      if (timer) clearTimeout(timer);
+      return res.type === "opaqueredirect";
+    }, function () {
+      if (timer) clearTimeout(timer);
+      return false;
+    });
+  }
+
+  /* Build a clear, actionable message for a network-level failure.
+     `redirected` (optional) comes from probeForRedirect: true when the
+     server itself issued a redirect (almost always http:// -> https://) for
+     this exact URL, which explains an otherwise-generic CORS-looking
+     failure as a provider-side HTTPS problem instead. */
+  function describeFetchError(err, url, redirected) {
     if (err && err.name === "AbortError") {
       return "The provider took too long to respond (timeout after 120s). Check that the server address and port are correct.";
     }
@@ -100,6 +128,9 @@
     }
     if (pageProto === "file:") {
       return "The app is opened straight from disk (file://), and Chrome/Edge block all network requests from file:// pages. Open this app via http:// or https://, then try again.";
+    }
+    if (redirected) {
+      return "The provider's server redirects this request to https://, but its https:// endpoint doesn't answer correctly (a broken TLS/SSL setup on their side — e.g. a Cloudflare \"525\" error). The browser has to follow that redirect and then gets blocked there, which looks like CORS but isn't: it's a misconfiguration on the provider's own server, not something this app, a proxy, or any browser setting can work around. Contact your provider/reseller about their HTTPS setup, or ask if they have a working https:// address to use directly.";
     }
     return "Could not reach the provider: either its server does not allow cross-origin requests (no CORS headers) or it is unreachable. Open the server URL in a browser tab to confirm it responds. If it loads there but not here, the server blocks CORS and no static HTML page can read it — ask the provider to enable CORS.";
   }
@@ -459,7 +490,16 @@
       p = p.catch(function (err) { lastErr = err; return fetchFrom(ab); });
     });
     return p.catch(function () {
-      throw new Error(describeFetchError(lastErr, m3uUrl(b, user, pass)));
+      var failedUrl = m3uUrl(b, user, pass);
+      /* Only worth probing for a redirect when the failure is a plain,
+         unexplained network-level error — an HTTP status, a timeout, or a
+         mixed-content/file:// block already fully explain themselves. */
+      var probe = (lastErr && (lastErr.http || lastErr.name === "AbortError"))
+        ? Promise.resolve(false)
+        : probeForRedirect(failedUrl);
+      return probe.then(function (redirected) {
+        throw new Error(describeFetchError(lastErr, failedUrl, redirected));
+      });
     });
   }
 

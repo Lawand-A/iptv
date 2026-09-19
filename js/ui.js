@@ -10,6 +10,50 @@
   var modalRoot = document.getElementById("modalRoot");
   var toastRoot = document.getElementById("toastRoot");
 
+  /* Instant-reload snapshot: the Home page's last rendered markup, cached so
+     app.js can paint it immediately on the next boot — before the library
+     has even loaded from IndexedDB — instead of showing a blank page while
+     waiting. Home is the only page snapshotted (its rows are always capped
+     to ~12-24 items each, so the cached HTML stays small regardless of
+     library size) and it is purely a visual placeholder: app.js marks it
+     inert (no clicks, no keyboard focus) and the real renderHome() always
+     replaces it wholesale once actual data is ready, so a stale or even
+     completely broken snapshot can never linger or affect real state —
+     at worst it fails to save/restore and the page is blank for a moment,
+     exactly like before this existed. */
+  var HOME_SNAPSHOT_KEY = "iptv_home_snapshot_v1";
+  var HOME_SNAPSHOT_MAX = 300000;
+  function saveHomeSnapshot(html) {
+    try {
+      if (html && html.length <= HOME_SNAPSHOT_MAX) {
+        localStorage.setItem(HOME_SNAPSHOT_KEY, html);
+      } else {
+        localStorage.removeItem(HOME_SNAPSHOT_KEY);
+      }
+    } catch (e) { /* ignore — quota, private mode, etc. */ }
+  }
+  /* Called when the library is cleared/reset — otherwise the stale snapshot
+     would keep flashing the old (pre-clear) Home page for a moment on the
+     next reload, before the real (now empty) render replaces it. */
+  function clearHomeSnapshot() {
+    try { localStorage.removeItem(HOME_SNAPSHOT_KEY); } catch (e) { /* ignore */ }
+  }
+
+  /* Write a cached derived value (label/search-key) onto an item or series
+     record as a non-enumerable property. Every "update" path in this app
+     (mergePlanner's mergeItem, Store.updateItem) builds the new object via
+     Object.assign({}, old, patch, ...) — which only copies old's *enumerable*
+     own properties. Using defineProperty here means a refresh or edit that
+     changes an item's title/group can never leave a stale cached label or
+     search key behind: the new object simply won't have this property at
+     all, so the cache getters (which check `=== undefined`) recompute it
+     fresh. Plain `it._label = value` would NOT have this safety — Object.assign
+     would carry it straight through since normal assignment is enumerable. */
+  function defineCache(obj, key, value) {
+    Object.defineProperty(obj, key, { value: value, writable: true, configurable: true, enumerable: false });
+    return value;
+  }
+
   function escapeHtml(s) {
     return String(s == null ? "" : s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -392,6 +436,7 @@
       img.loading = "lazy";
       bindPosterImage(img, wrap);
       img.src = item.poster;
+      if (global.ImageCache) ImageCache.useCached(img, item.poster);
       wrap.appendChild(img);
     } else {
       wrap.appendChild(fallbackIcon(wrap));
@@ -536,20 +581,43 @@
     grid.className = "grid";
     var i = 0;
     var btn = null;
+    var observer = null;
+
+    /* Auto-load the next chunk once the "Load more" button is within 600px
+       of the viewport, so a huge grid feels like one continuous scroll
+       instead of demanding a click every 120 items. A fresh observer is
+       attached after every chunk so a still-short remaining list (button
+       staying on-screen) keeps chaining loads instead of stalling after
+       one. The button itself stays in the DOM as a focusable fallback for
+       keyboard/TV-remote navigation and for browsers without
+       IntersectionObserver. */
+    function watchBtn() {
+      if (observer) { observer.disconnect(); observer = null; }
+      if (!btn || typeof IntersectionObserver === "undefined") return;
+      observer = new IntersectionObserver(function (entries) {
+        if (entries.some(function (e) { return e.isIntersecting; })) addChunk();
+      }, { rootMargin: "600px" });
+      observer.observe(btn);
+    }
 
     function syncBtn() {
       if (i >= items.length) {
+        if (observer) { observer.disconnect(); observer = null; }
         if (btn && btn.parentNode) btn.remove();
         btn = null;
-      } else if (!btn) {
+        return;
+      }
+      if (!btn) {
         btn = document.createElement("button");
         btn.className = "btn btn-primary focusable load-more";
         btn.textContent = "Load more";
         btn.addEventListener("click", addChunk);
         root.appendChild(btn);
       }
+      watchBtn();
     }
     function addChunk() {
+      if (observer) { observer.disconnect(); observer = null; }
       var end = Math.min(i + pageSize, items.length);
       for (; i < end; i++) grid.appendChild(cardFn(items[i]));
       syncBtn();
@@ -558,6 +626,38 @@
     root.appendChild(grid);
     addChunk();
     return grid;
+  }
+
+  /* Cache each item's lowercase title/seriesName search key directly on the
+     item object, computed once. Items are long-lived — the same object
+     references come back from every Store call — so this turns an O(n)
+     toLowerCase() pass on every single page visit (not just every
+     keystroke) into a one-time cost per item, ever. A merge or edit always
+     produces a fresh object (see mergePlanner/updateItem) that never has
+     this property — defineCache made it non-enumerable, so Object.assign
+     never carries a stale value over — so there is nothing to invalidate. */
+  function titleSearchKey(it) {
+    if (it._titleKey === undefined) {
+      return defineCache(it, "_titleKey", String(it.title || it.seriesName || "").toLowerCase());
+    }
+    return it._titleKey;
+  }
+
+  /* Same caching idea for the Search page's wider haystack (title + group +
+     seriesName + episodeTitle + tvgName). Series records come from
+     Store.getSeriesList(), which returns the same objects across calls until
+     the library actually changes, so caching on them is just as safe. */
+  function itemSearchHay(it) {
+    if (it._searchHay === undefined) {
+      return defineCache(it, "_searchHay", ((it.title || "") + " " + (it.group || "") + " " + (it.seriesName || "") + " " + (it.episodeTitle || "") + " " + (it.tvgName || "")).toLowerCase());
+    }
+    return it._searchHay;
+  }
+  function seriesSearchHay(s) {
+    if (s._searchHay === undefined) {
+      return defineCache(s, "_searchHay", (s.seriesName + " " + (s.group || "")).toLowerCase());
+    }
+    return s._searchHay;
   }
 
   /* A full-width search bar above a paged grid. Typing filters the items
@@ -574,11 +674,9 @@
     var gridWrap = document.createElement("div");
     root.appendChild(gridWrap);
 
-    /* Precompute lowercase search keys once so filtering huge libraries
-       (100k+ items) never calls toLowerCase per item per keystroke. */
     var keys = new Array(allItems.length);
     for (var ki = 0; ki < allItems.length; ki++) {
-      keys[ki] = String(allItems[ki].title || allItems[ki].seriesName || "").toLowerCase();
+      keys[ki] = titleSearchKey(allItems[ki]);
     }
 
     function renderGrid(list) {
@@ -733,6 +831,7 @@
 
     page.innerHTML = "";
     page.appendChild(root);
+    saveHomeSnapshot(root.outerHTML);
   }
 
   function appendIf(container, node) {
@@ -907,6 +1006,7 @@
     if (first) {
       var img = document.createElement("img");
       img.src = first;
+      if (global.ImageCache) ImageCache.useCached(img, first);
       img.alt = name;
       img.loading = "lazy";
       bindPosterImage(img, art, "▦");
@@ -1026,23 +1126,29 @@
       return it.title || it.seriesName || it.episodeTitle || "Untitled";
     }
 
+    /* Cache the computed label (and its lowercase form) directly on each
+       item object rather than in a Map scoped to this call. Items are
+       long-lived — the same object references come back from every Store
+       call — so this turns an O(n) labelFor+toLowerCase pass on every
+       single render (every page switch to Live/a category, every re-sort)
+       into a one-time cost per item instead of paying it again on every
+       visit. A merge or edit always produces a fresh object (see
+       mergePlanner/updateItem) that never has this property —
+       defineCache made it non-enumerable, so Object.assign never carries a
+       stale value over — so there is nothing to invalidate. */
+    function cachedLabel(it) {
+      if (it._label === undefined) return defineCache(it, "_label", labelFor(it));
+      return it._label;
+    }
+    function cachedLabelLower(it) {
+      if (it._labelLower === undefined) return defineCache(it, "_labelLower", cachedLabel(it).toLowerCase());
+      return it._labelLower;
+    }
+
     items = items.slice();
     var pinned = {};
     Store.getPins().forEach(function (id) { pinned[id] = true; });
 
-    /* Precompute lowercase search labels once so filtering doesn't call
-       labelFor + toLowerCase for every item on every keystroke. */
-    var searchLabels = new Array(items.length);
-    for (var si = 0; si < items.length; si++) {
-      searchLabels[si] = labelFor(items[si]).toLowerCase();
-    }
-
-    /* Cache labels to avoid calling labelFor twice per sort comparison. */
-    var labelCache = {};
-    function cachedLabel(it) {
-      if (!labelCache[it.id]) labelCache[it.id] = labelFor(it);
-      return labelCache[it.id];
-    }
     function sortItems() {
       items.sort(function (a, b) {
         var pa = pinned[a.id] ? 0 : 1;
@@ -1058,9 +1164,9 @@
       });
     }
     sortItems();
-    /* Rebuild search labels after sort so indices match. */
-    for (var si2 = 0; si2 < items.length; si2++) {
-      searchLabels[si2] = labelFor(items[si2]).toLowerCase();
+    var searchLabels = new Array(items.length);
+    for (var si = 0; si < items.length; si++) {
+      searchLabels[si] = cachedLabelLower(items[si]);
     }
 
     var layout = document.createElement("div");
@@ -1114,13 +1220,13 @@
       var row = document.createElement("button");
       row.className = "live-item focusable";
       row.setAttribute("role", "button");
-      row.setAttribute("aria-label", labelFor(it));
+      row.setAttribute("aria-label", cachedLabel(it));
       var ico = document.createElement("span");
       ico.className = "live-ico";
       ico.textContent = "▶";
       var name = document.createElement("span");
       name.className = "live-name";
-      name.textContent = labelFor(it);
+      name.textContent = cachedLabel(it);
       row.appendChild(ico);
       row.appendChild(name);
       if (opts.showGroup && (it.group || "")) {
@@ -1135,7 +1241,7 @@
       var pin = document.createElement("button");
       pin.className = "live-pin focusable";
       pin.setAttribute("role", "button");
-      pin.setAttribute("aria-label", (pinned[it.id] ? "Unpin " : "Pin ") + labelFor(it));
+      pin.setAttribute("aria-label", (pinned[it.id] ? "Unpin " : "Pin ") + cachedLabel(it));
       pin.title = pin.getAttribute("aria-label");
       function paintPin() {
         pin.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg>';
@@ -1382,6 +1488,7 @@
       bgImg.loading = "lazy";
       bindPosterImage(bgImg, bg);
       bgImg.src = s.poster;
+      if (global.ImageCache) ImageCache.useCached(bgImg, s.poster);
       bg.appendChild(bgImg);
     }
     backdrop.appendChild(bg);
@@ -1397,6 +1504,7 @@
       img.alt = s.seriesName;
       bindPosterImage(img, poster);
       img.src = s.poster;
+      if (global.ImageCache) ImageCache.useCached(img, s.poster);
       poster.appendChild(img);
     } else {
       poster.appendChild(fallbackIcon(poster));
@@ -1537,6 +1645,7 @@
         tImg.loading = "lazy";
         bindPosterImage(tImg, thumb);
         tImg.src = ep.poster;
+        if (global.ImageCache) ImageCache.useCached(tImg, ep.poster);
         thumb.appendChild(tImg);
       } else {
         thumb.textContent = "▶";
@@ -1664,6 +1773,7 @@
       bgImg.loading = "lazy";
       bindPosterImage(bgImg, bg);
       bgImg.src = item.poster;
+      if (global.ImageCache) ImageCache.useCached(bgImg, item.poster);
       bg.appendChild(bgImg);
     }
     backdrop.appendChild(bg);
@@ -1676,6 +1786,7 @@
     if (item.poster) {
       var img = document.createElement("img");
       img.src = item.poster;
+      if (global.ImageCache) ImageCache.useCached(img, item.poster);
       img.alt = item.title;
       bindPosterImage(img, poster);
       poster.appendChild(img);
@@ -1968,30 +2079,46 @@
     results.className = "search-results";
     root.appendChild(results);
 
-    /* Precompute searchable text once per page render. The library is static
-       during a search session, and rebuilding 300k+ haystack strings on every
-       keystroke is what froze the UI. */
+    /* Precompute searchable text once per page render. The per-item/series
+       hay strings are cached on the objects themselves (itemSearchHay /
+       seriesSearchHay) so revisiting Search never re-pays that cost — only
+       the (cheap) wrapper-array rebuild happens again. Building it is also
+       chunked with setTimeout so even the very first search on a huge
+       library (300k+ items) never freezes the UI. */
     var searchCache = null;
-    function buildCache() {
+    function buildCacheAsync(done) {
       var series = seriesList();
       var seriesMap = {};
       var hay = [];
       for (var i = 0; i < series.length; i++) {
         var s = series[i];
         seriesMap[s.seriesId] = s;
-        hay.push({ it: s, seriesRef: s, isEpisode: false, hay: (s.seriesName + " " + (s.group || "")).toLowerCase() });
+        hay.push({ it: s, seriesRef: s, isEpisode: false, hay: seriesSearchHay(s) });
       }
-      Store.getItems().forEach(function (it) {
-        if (it.type === "series") return;
-        var h = ((it.title || "") + " " + (it.group || "") + " " + (it.seriesName || "") + " " + (it.episodeTitle || "") + " " + (it.tvgName || "")).toLowerCase();
-        if (it.type === "episode") {
-          var skey = it.seriesId || "series-" + M3UParser.stableId(it.seriesName || it.title);
-          hay.push({ it: it, seriesRef: seriesMap[skey] || null, isEpisode: true, hay: h });
-        } else {
-          hay.push({ it: it, seriesRef: null, isEpisode: false, hay: h });
+      var all = Store.getItems();
+      var idx = 0;
+      var CHUNK = 8000;
+      function step() {
+        var end = Math.min(idx + CHUNK, all.length);
+        for (; idx < end; idx++) {
+          var it = all[idx];
+          if (it.type === "series") continue;
+          var h = itemSearchHay(it);
+          if (it.type === "episode") {
+            var skey = it.seriesId || "series-" + M3UParser.stableId(it.seriesName || it.title);
+            hay.push({ it: it, seriesRef: seriesMap[skey] || null, isEpisode: true, hay: h });
+          } else {
+            hay.push({ it: it, seriesRef: null, isEpisode: false, hay: h });
+          }
         }
-      });
-      searchCache = hay;
+        if (idx < all.length) {
+          setTimeout(step, 0);
+        } else {
+          searchCache = hay;
+          done();
+        }
+      }
+      step();
     }
 
     function renderResults(q, moviesHit, seriesHit) {
@@ -2036,34 +2163,38 @@
         results.appendChild(hint);
         return;
       }
-      if (!searchCache) buildCache();
-      var moviesHit = [], seriesHit = [];
-      var CHUNK = 8000;
-      var i = 0;
       run.seq = (run.seq || 0) + 1;
       var seq = run.seq;
-      function step() {
-        /* A newer keystroke superseded this scan; drop it. */
+      function scan() {
         if (seq !== run.seq) return;
-        var end = Math.min(i + CHUNK, searchCache.length);
-        for (; i < end; i++) {
-          var d = searchCache[i];
-          if (d.hay.indexOf(q) === -1) continue;
-          if (d.isEpisode) {
-            if (d.seriesRef && seriesHit.indexOf(d.seriesRef) === -1) seriesHit.push(d.seriesRef);
-          } else if (d.seriesRef) {
-            if (seriesHit.indexOf(d.seriesRef) === -1) seriesHit.push(d.seriesRef);
-          } else {
-            moviesHit.push(d.it);
+        var moviesHit = [], seriesHit = [];
+        var CHUNK = 8000;
+        var i = 0;
+        function step() {
+          /* A newer keystroke superseded this scan; drop it. */
+          if (seq !== run.seq) return;
+          var end = Math.min(i + CHUNK, searchCache.length);
+          for (; i < end; i++) {
+            var d = searchCache[i];
+            if (d.hay.indexOf(q) === -1) continue;
+            if (d.isEpisode) {
+              if (d.seriesRef && seriesHit.indexOf(d.seriesRef) === -1) seriesHit.push(d.seriesRef);
+            } else if (d.seriesRef) {
+              if (seriesHit.indexOf(d.seriesRef) === -1) seriesHit.push(d.seriesRef);
+            } else {
+              moviesHit.push(d.it);
+            }
+          }
+          if (i < searchCache.length) {
+            setTimeout(step, 0);
+          } else if (seq === run.seq) {
+            renderResults(q, moviesHit, seriesHit);
           }
         }
-        if (i < searchCache.length) {
-          setTimeout(step, 0);
-        } else if (seq === run.seq) {
-          renderResults(q, moviesHit, seriesHit);
-        }
+        step();
       }
-      step();
+      if (!searchCache) buildCacheAsync(scan);
+      else scan();
     }
 
     function resultRow(it) {
@@ -2264,7 +2395,6 @@
     regexRow.appendChild(regexInput);
     regexRow.appendChild(regexToggle);
     importOptsPanel.appendChild(regexRow);
-    grid.appendChild(importOptsPanel);
 
     /* Xtream provider */
     var xt = Store.getSettings().xtream || {};
@@ -2302,6 +2432,13 @@
     }
     xtreamPanel.appendChild(xtActions);
     grid.appendChild(xtreamPanel);
+    /* Appended after Xtream (not right after being built above) so that on
+       mobile — where .settings-grid falls back to single-column, source-order
+       stacking — Xtream Provider lands above Import Options, matching the
+       >=1200px layout's explicit grid-template-areas (which already puts the
+       "opts" row below the "import xtream export add" row regardless of DOM
+       order). */
+    grid.appendChild(importOptsPanel);
 
     /* Export */
     var exportPanel = panel("Export M3U", "Download the current library as library.m3u. Embed sources round-trip losslessly.");
@@ -2589,7 +2726,7 @@
       return Promise.resolve(false);
     }
     var filtered = all.length - items.length;
-    return mergeIntoLibraryAsync(items, function (pct) {
+    return queuedMerge(items, function (pct) {
       setProgressStatus("Importing items… " + pct + "%");
     }).then(function (c) {
       toast("Added " + c.added + " · Updated " + c.updated + " · Duplicates skipped " + c.skipped
@@ -2762,9 +2899,11 @@
   }
 
   /* Refresh every saved source from the navbar button: the saved M3U link and
-     the saved Xtream provider (in that order), one after the other — the merge
-     rewrites the whole library, so concurrent refreshes would clobber each
-     other. Shows an error only when nothing is saved. */
+     the saved Xtream provider. Both run in parallel to cut total refresh
+     time in half; safe because every import path merges through
+     queuedMerge, which serializes writes to the library so concurrent
+     refreshes never clobber each other. Shows an error only when nothing is
+     saved. */
   function refreshSources() {
     var settings = Store.getSettings();
     var jobs = [];
@@ -3351,6 +3490,7 @@
     importFile: importFile,
     importFromUrl: importFromUrl,
     refreshSources: refreshSources,
+    clearHomeSnapshot: clearHomeSnapshot,
     mergeIntoLibrary: mergeIntoLibrary,
     setProgressStatus: setProgressStatus,
     confirmModal: confirmModal,
