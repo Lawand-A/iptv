@@ -851,30 +851,37 @@
   /* Arrow-left/right seek step while a direct video is playing. */
   var ARROW_SEEK_STEP = 5;
 
-  /* Document-level arrow seeking: while the player owns a direct <video>,
-     ArrowLeft/ArrowRight seek back/forward 5 seconds. The spatial-navigation
-     handler (navigation.js) is capture-phase and runs first — it checks
-     Player.consumesArrows() and lets these keys through to this handler.
-     Skips any input/slider focus so the seek/volume bars keep working. */
-  function onArrowSeek(e) {
+  /* Document-level player keys: while the player owns a direct <video>,
+     ArrowLeft/ArrowRight seek back/forward 5 seconds and Space toggles
+     play/pause. The spatial-navigation handler (navigation.js) is
+     capture-phase and runs first — it checks Player.consumesKeys() and lets
+     these keys through to this handler. Skips any input/slider focus so the
+     seek/volume bars keep working. */
+  function onPlayerKey(e) {
     if (!active || !video) return;
     /* Normalize the key (handles TV remotes delivering "Left" instead of
-       "ArrowLeft", or only a keyCode) via the navigation helper. */
+       "ArrowLeft", "Select" instead of "Space", or only a keyCode) via the
+       navigation helper. */
     var key = global.Nav && typeof Nav.keyName === "function" ? Nav.keyName(e) : (e.key || e.keyIdentifier || "");
-    if (key !== "left" && key !== "right") return;
+    if (key !== "left" && key !== "right" && key !== "space" && key !== "enter") return;
     if (e.defaultPrevented) return;
     var t = e.target;
     if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
     e.preventDefault();
-    seekBy(video, key === "left" ? -ARROW_SEEK_STEP : ARROW_SEEK_STEP);
+    if (key === "left" || key === "right") {
+      seekBy(video, key === "left" ? -ARROW_SEEK_STEP : ARROW_SEEK_STEP);
+    } else {
+      togglePlay(video);
+    }
     if (seekPoke) seekPoke();
   }
-  document.addEventListener("keydown", onArrowSeek);
+  document.addEventListener("keydown", onPlayerKey);
 
-  /* True while the player is showing a direct video (seekable) and the user
-     is not typing into an input — used by navigation.js to cede left/right
-     arrows to the player instead of moving the spatial focus. */
-  function consumesArrows() {
+  /* True while the player is showing a direct video (seekable/playable) and
+     the user is not typing into an input — used by navigation.js to cede
+     left/right/space to the player instead of moving focus or activating the
+     focused element. */
+  function consumesKeys() {
     var t = document.activeElement;
     var typing = t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName);
     return !!(active && video && !typing);
@@ -1408,7 +1415,7 @@
     fullscreen: fullscreen,
     cancel: cancel,
     isActive: function () { return active; },
-    consumesArrows: consumesArrows,
+    consumesKeys: consumesKeys,
     preloadStreamLibs: preloadStreamLibs,
     escape: escape
   };
