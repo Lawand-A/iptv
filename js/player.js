@@ -848,6 +848,38 @@
     } catch (e) { /* ignore */ }
   }
 
+  /* Arrow-left/right seek step while a direct video is playing. */
+  var ARROW_SEEK_STEP = 5;
+
+  /* Document-level arrow seeking: while the player owns a direct <video>,
+     ArrowLeft/ArrowRight seek back/forward 5 seconds. The spatial-navigation
+     handler (navigation.js) is capture-phase and runs first — it checks
+     Player.consumesArrows() and lets these keys through to this handler.
+     Skips any input/slider focus so the seek/volume bars keep working. */
+  function onArrowSeek(e) {
+    if (!active || !video) return;
+    /* Normalize the key (handles TV remotes delivering "Left" instead of
+       "ArrowLeft", or only a keyCode) via the navigation helper. */
+    var key = global.Nav && typeof Nav.keyName === "function" ? Nav.keyName(e) : (e.key || e.keyIdentifier || "");
+    if (key !== "left" && key !== "right") return;
+    if (e.defaultPrevented) return;
+    var t = e.target;
+    if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
+    e.preventDefault();
+    seekBy(video, key === "left" ? -ARROW_SEEK_STEP : ARROW_SEEK_STEP);
+    if (seekPoke) seekPoke();
+  }
+  document.addEventListener("keydown", onArrowSeek);
+
+  /* True while the player is showing a direct video (seekable) and the user
+     is not typing into an input — used by navigation.js to cede left/right
+     arrows to the player instead of moving the spatial focus. */
+  function consumesArrows() {
+    var t = document.activeElement;
+    var typing = t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName);
+    return !!(active && video && !typing);
+  }
+
   function buildEpisodeNav(item) {
     var series = Store.getSeries(item.seriesId);
     if (!series || !series.episodes || series.episodes.length <= 1) return null;
@@ -1376,6 +1408,7 @@
     fullscreen: fullscreen,
     cancel: cancel,
     isActive: function () { return active; },
+    consumesArrows: consumesArrows,
     preloadStreamLibs: preloadStreamLibs,
     escape: escape
   };
