@@ -412,6 +412,11 @@
     return p;
   }
 
+  function safeFileName(name) {
+    var base = String(name || "series").replace(/[\\/:*?"<>|\s]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 80);
+    return (base || "series") + ".m3u";
+  }
+
   function episodeLabel(ep) {
     var s = ep.season == null ? 0 : ep.season;
     var e = ep.episodeNumber == null ? 0 : ep.episodeNumber;
@@ -1724,6 +1729,20 @@
       App.navigate("#edit/" + encodeURIComponent(rec.id));
     });
     danger.appendChild(editSeriesBtn);
+    var exp = document.createElement("button");
+    exp.className = "btn btn-secondary focusable";
+    exp.textContent = "Export as M3U";
+    exp.setAttribute("aria-label", "Download " + s.seriesName + " as an M3U playlist");
+    if (s.episodes.length) {
+      exp.addEventListener("click", function () {
+        M3UExporter.download(s.episodes.slice(), safeFileName(s.seriesName));
+        toast("Exported " + s.episodes.length + " episodes to M3U", "ok");
+      });
+    } else {
+      exp.disabled = true;
+      exp.setAttribute("title", "No episodes to export yet");
+    }
+    danger.appendChild(exp);
     var del = document.createElement("button");
     del.className = "btn btn-danger focusable";
     del.textContent = "Delete entire series";
@@ -1865,6 +1884,22 @@
     actions.appendChild(wl);
     actions.appendChild(watched);
     actions.appendChild(edit);
+
+    var exp = document.createElement("button");
+    exp.className = "btn btn-secondary focusable";
+    exp.textContent = "Export as M3U";
+    exp.setAttribute("aria-label", "Download " + item.title + " as an M3U playlist");
+    if (item.source) {
+      exp.addEventListener("click", function () {
+        M3UExporter.download([item], safeFileName(item.title));
+        toast("Exported “" + item.title + "” to M3U", "ok");
+      });
+    } else {
+      exp.disabled = true;
+      exp.setAttribute("title", "This item has no source to export");
+    }
+    actions.appendChild(exp);
+
     actions.appendChild(del);
 
     info.appendChild(title);
