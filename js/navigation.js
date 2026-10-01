@@ -305,6 +305,17 @@
     /* Do not steal arrows from the media element (native seek/volume). */
     if (e.target && (e.target.tagName === "VIDEO" || e.target.tagName === "IFRAME")) return;
 
+    /* While the player is showing a direct video, left/right arrows seek ±5 s
+       and space toggles play/pause (handled by the player's own document
+       listener) instead of moving the spatial focus or activating the
+       focused element. */
+    if (key === "left" || key === "right" || key === "space") {
+      if (global.Player && typeof Player.consumesKeys === "function" && Player.consumesKeys()) {
+        setInputMode("keyboard");
+        return;
+      }
+    }
+
     if (key === "left" || key === "right" || key === "up" || key === "down" || key === "tab") {
       setInputMode("keyboard");
       if (key === "tab") return; // let the browser handle Tab order
