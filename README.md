@@ -8,12 +8,13 @@ It supports movies, live TV channels, series with episodes, and **embeddable web
 
 The app is designed to work like a lightweight Netflix-style client: poster grids, category rows, searchable lists, resume playback, watchlist, and recently watched.
 
+This is a live **Demo**: http://tv.crackoverflow.com
+
 ## How to use
 - [Downlaod this github project](https://github.com/Lawand-A/iptv/archive/refs/heads/main.zip).
 - Extract the project.
 - Open the `index.html` file with a browser. 
 
-This is a live **Demo**: http://tv.crackoverflow.com
 ![Project Image](image.png)
 
 ## Mobile Devices
