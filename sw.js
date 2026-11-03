@@ -5,12 +5,13 @@
    never cached — they must always hit the network. */
 "use strict";
 
-var VERSION = "streamhub-v17";
+var VERSION = "streamhub-v18";
 var SHELL = [
   "./index.html",
   "./manifest.json",
   "./css/style.css",
   "./js/storage.js",
+  "./js/image-cache.js",
   "./js/m3u-parser.js",
   "./js/m3u-exporter.js",
   "./js/xtream.js",
@@ -79,9 +80,30 @@ self.addEventListener("fetch", function (e) {
     return;
   }
 
-  /* Cross-origin (CDN scripts like hls.js/mpegts.js, posters): network first,
-     fall back to a cached copy when offline. Opaque responses (no-cors images)
-     have res.ok === false but are still worth caching. */
+  /* Poster/thumbnail images: cache-first. Provider image servers are often
+     slow, distant, or connection-limited, and a poster's content never
+     changes once imported — re-fetching it over the network on every single
+     view (which network-first below would do) is pure wasted latency once
+     it's already cached. req.destination reliably reports "image" for both
+     <img> tags and CSS background-image fetches. */
+  if (req.destination === "image") {
+    e.respondWith(
+      caches.match(req, { ignoreSearch: true }).then(function (cached) {
+        if (cached) return cached;
+        return fetch(req).then(function (res) {
+          if (res && (res.ok || res.type === "opaque")) {
+            var copy = res.clone();
+            caches.open(VERSION).then(function (cache) { cache.put(req, copy); });
+          }
+          return res;
+        });
+      })
+    );
+    return;
+  }
+
+  /* Cross-origin CDN scripts (hls.js/mpegts.js): network first, fall back to
+     a cached copy when offline, so library updates are still picked up. */
   e.respondWith(
     fetch(req).then(function (res) {
       if (res && (res.ok || res.type === "opaque")) {
